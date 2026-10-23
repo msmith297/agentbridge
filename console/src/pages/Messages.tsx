@@ -26,6 +26,16 @@ const SYSTEM = 'agent-bridge';
 const go = (hash: string) => { location.hash = hash; };
 const dmHash = (key: string) => `/messages/dm/${encodeURIComponent(key)}`;
 const URL_RE = /(https?:\/\/[^\s<>"']*[^\s<>"'.,;:!?)\]])/;
+// Text and links alternating (links at odd indexes). A ")" right after a link is part of it when the
+// link opened one, e.g. https://en.wikipedia.org/wiki/Foo_(bar).
+function splitLinks(text: string) {
+  const bits = text.split(URL_RE);
+  for (let k = 1; k < bits.length; k += 2) {
+    const open = (bits[k].match(/\(/g) ?? []).length, close = (bits[k].match(/\)/g) ?? []).length;
+    if (open > close && bits[k + 1]?.startsWith(')')) { bits[k] += ')'; bits[k + 1] = bits[k + 1].slice(1); }
+  }
+  return bits;
+}
 
 // The other side of a direct message, by stable identity. Older messages have no keys: use the
 // agent that holds that name now if there's exactly one, else the name itself ("name:…").
@@ -463,7 +473,7 @@ export function Feed({ entries, state, session, me, view, all, labels, onChanged
   // Web links open in a new tab (trailing punctuation stays text).
   const linkRefs = (node: ReactNode): ReactNode => {
     const parts = Array.isArray(node) ? node : [node];
-    return parts.map((part, i) => typeof part !== 'string' ? part : part.split(URL_RE).map((chunk, u) => u % 2 === 1
+    return parts.map((part, i) => typeof part !== 'string' ? part : splitLinks(part).map((chunk, u) => u % 2 === 1
       ? <a key={`${i}-u${u}`} className="msg-link" href={chunk} target="_blank" rel="noopener noreferrer">{chunk}</a>
       : chunk.split(/(#\d{1,7}\b)/).map((bit, j) => {
         const id = /^#\d+$/.test(bit) ? Number(bit.slice(1)) : 0;
