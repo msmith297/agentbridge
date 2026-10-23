@@ -332,12 +332,17 @@ ${features}${MARK_END}\n`;
   if (!legacy) installCodexPlugin(remove);
   if (remove) fs.rmSync(CODEX_MARKET, { recursive: true, force: true });
 
+  // hooks.json: only the legacy setup uses it; otherwise just clear out old agent-bridge entries, if any.
+  const adding = !remove && legacy;
+  if (!adding && !fs.existsSync(CODEX_HOOKS)) return;
   const hooksFile = readJson(CODEX_HOOKS, {});
   hooksFile.hooks ||= {};
+  const before = JSON.stringify(hooksFile.hooks);
   stripHooks(hooksFile.hooks);
-  if (!remove && legacy) addHooks(hooksFile.hooks, codexStop());
+  if (adding) addHooks(hooksFile.hooks, codexStop());
+  else if (JSON.stringify(hooksFile.hooks) === before) return; // nothing of ours in it
   writeJson(CODEX_HOOKS, hooksFile);
-  ok(`${!remove && legacy ? 'installed' : 'removed agent-bridge'} hooks in ${CODEX_HOOKS}`);
+  ok(`${adding ? 'installed' : 'removed agent-bridge'} hooks in ${CODEX_HOOKS}`);
 }
 
 // ---------- hub check ----------
