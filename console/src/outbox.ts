@@ -22,6 +22,7 @@ export interface Outgoing {
   uploads: string[]; // Upload keys
   at: number;
   error?: string;
+  sent?: boolean; // the hub has it; shown until the conversation's copy replaces it
 }
 
 const uploads = new Map<string, Upload>();
@@ -95,11 +96,17 @@ export function sendQueued(session: Session, conv: string, text: string, uploadK
       for (const k of uploadKeys) retryUpload(session, k); // a failed upload gets another go
       const ids = await Promise.all(uploadKeys.map(k => uploads.get(k)!.done));
       await deliver(ids, item.key);
-      await after();
-      outgoing = outgoing.filter(o => o !== item);
+      item.sent = true;
       runs.delete(item.key);
-      for (const k of uploadKeys) dropUpload(k);
       changed();
+      await after();
+      // Keep showing it until the conversation has the hub's copy (the feed hides it then: same element,
+      // no gap). Removing it here could leave a frame with neither, which looks like a glitch.
+      setTimeout(() => {
+        outgoing = outgoing.filter(o => o !== item);
+        for (const k of uploadKeys) dropUpload(k);
+        changed();
+      }, 30_000);
     } catch (err) {
       item.error = (err as Error).message;
       changed();
@@ -112,7 +119,7 @@ export function sendQueued(session: Session, conv: string, text: string, uploadK
 export const retryOutgoing = (key: string) => runs.get(key)?.();
 
 // Something is being sent or uploaded (a reload now would lose it).
-export const outboxBusy = () => outgoing.length > 0 || [...uploads.values()].some(u => !u.id && !u.error);
+export const outboxBusy = () => outgoing.some(o => !o.sent) || [...uploads.values()].some(u => !u.id && !u.error);
 
 // Send a message that failed somewhere else instead (e.g. to one of several agents sharing a name).
 export function redirectOutgoing(session: Session, key: string, conv: string,

@@ -447,6 +447,11 @@ export function Feed({ entries, state, session, me, view, all, labels, onChanged
   // the hub's copy is in the list (no flash of both).
   const linked = new Set(entries.map(e => sentKey(e.first.id)).filter(Boolean));
   const sending = outgoing.filter(o => (view.kind === 'all' || o.conv === conv) && !linked.has(o.key));
+  // The hub's copy of something still being sent can arrive (by a poll) before the send returns:
+  // keep showing the sending bubble until the two are linked, so the bubble isn't swapped for a
+  // new element (which replayed its slide-in and looked like a blink).
+  entries = entries.filter(e => !(e.first.from.toLowerCase() === me && !sentKey(e.first.id)
+    && sending.some(o => !o.error && o.text && o.text === e.first.body && Math.abs(e.first.created_at - o.at) < 10 * 60_000)));
   // Messages that arrive while the view is open slide in; the ones already there don't.
   // (Per conversation: switching to another one doesn't animate its history.)
   const shownUpTo = useRef<number | null>(null);
@@ -579,7 +584,7 @@ export function Feed({ entries, state, session, me, view, all, labels, onChanged
                 {left.length && !o.error ? <div className="upload-progress"><span style={{ width: `${Math.round(progress * 100)}%` }} /></div> : null}
               </div>
               <div className={`msg-status ${o.error ? 'error' : 'muted'} small`}>
-                {o.error ? `Not sent: ${o.error}` : left.length ? `Uploading ${ups.length - left.length}/${ups.length} · ${Math.round(progress * 100)}%` : 'Sending…'}
+                {o.error ? `Not sent: ${o.error}` : left.length ? `Uploading ${ups.length - left.length}/${ups.length} · ${Math.round(progress * 100)}%` : o.sent ? '✓ Sent' : 'Sending…'}
                 {o.error ? <>
                   {' '}<button className="link small" onClick={() => retryOutgoing(o.key)}>Retry</button>
                   {' '}<button className="link small" onClick={() => discardOutgoing(o.key)}>Discard</button>
