@@ -1036,8 +1036,11 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
   // working, so its hooks remind it to confirm in a line (once while it works, once at its turn's end).
   const AWAITING_SQL = `FROM messages m WHERE m.to_name = ? COLLATE NOCASE AND m.delivered_at > ? AND coalesce(m.quiet, 0) = 0
     AND (m.from_key LIKE 'human:%' OR EXISTS (SELECT 1 FROM peers h WHERE h.name = m.from_name COLLATE NOCASE AND h.kind = 'human'))
-    AND NOT EXISTS (SELECT 1 FROM messages r WHERE (r.from_name = ? COLLATE NOCASE OR r.from_key = ?) AND r.created_at >= m.delivered_at
-      AND (r.to_name = m.from_name COLLATE NOCASE OR (m.chat_id IS NOT NULL AND r.chat_id = m.chat_id)))`;
+    AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.created_at >= m.created_at AND (
+      ((r.from_name = ? COLLATE NOCASE OR r.from_key = ?) AND r.created_at >= m.delivered_at AND r.to_name = m.from_name COLLATE NOCASE)
+      -- In a group (chat or project chat), an answer from any agent there will do: not every member has to reply.
+      OR (m.chat_id IS NOT NULL AND r.chat_id = m.chat_id AND coalesce(r.from_key, '') NOT LIKE 'human:%')
+      OR (m.chat_id IS NULL AND m.project IS NOT NULL AND r.project = m.project AND coalesce(r.from_key, '') NOT LIKE 'human:%')))`;
   const awaitingArgs = p => [p.name, now() - 2 * 3_600_000, p.name, p.session_id || p.id];
   const awaitingCount = p => db.get(`SELECT count(*) AS n ${AWAITING_SQL} AND coalesce(m.reply_nudged, 0) < 2`, ...awaitingArgs(p)).n;
   function awaitingReply(p, stage) {
