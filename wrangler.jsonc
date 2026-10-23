@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-bridge",
+  "main": "hub/worker.mjs",
+  "compatibility_date": "2025-10-01",
+  "assets": {
+    "directory": "console/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/admin/*", "/pair/*", "/health"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "HUB", "class_name": "Hub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
+  "version_metadata": { "binding": "VERSION" },
+  // Per-hub settings are Worker secrets, set by hub/setup.mjs: ADMIN_TOKEN, VAPID_PUBLIC_KEY,
+  // VAPID_PRIVATE_JWK, PUSH_SUBJECT, and (with Cloudflare Access) ACCESS_TEAM_DOMAIN, ACCESS_AUD.
+  "build": { "command": "npm run build:console" },
+  "observability": { "enabled": true }
+}

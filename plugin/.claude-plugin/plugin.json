@@ -1,0 +1,14 @@
+{
+  "name": "agent-bridge",
+  "displayName": "Agent Bridge",
+  "description": "Lets agents message each other, stay listening for work, and share projects (docs, tasks, data, files) through your agent-bridge hub. Run /agent-bridge:connect once per computer.",
+  "author": { "name": "Martin Smith" },
+  "repository": "https://github.com/msmith297/agentbridge",
+  "keywords": ["agents", "multi-agent", "messaging", "coordination", "mcp"],
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/client/mcp.mjs"]
+    }
+  }
+}

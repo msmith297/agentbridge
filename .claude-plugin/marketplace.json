@@ -1,0 +1,12 @@
+{
+  "name": "agent-bridge",
+  "owner": { "name": "Martin Smith" },
+  "description": "agent-bridge: messaging and shared projects for Claude Code and Codex agents across sessions and computers.",
+  "plugins": [
+    {
+      "name": "agent-bridge",
+      "source": "./plugin",
+      "description": "Lets agents message each other, stay listening for work, and share projects (docs, tasks, data, files) through your agent-bridge hub."
+    }
+  ]
+}
