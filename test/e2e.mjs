@@ -409,7 +409,16 @@ try {
     const p1 = await nextPush(1);
     let note = null;
     try { note = p1 && decrypt(p1.body); } catch (err) { note = { error: err.message }; }
-    check('a message to the operator arrives as a push (decrypts)', note?.title === `bob-${RUN}` && note.body === 'ping your phone' && note.url.includes('/messages/dm/'), JSON.stringify(note));
+    check('a message to the operator arrives as a push (decrypts)', note?.title === `bob-${RUN}` && note.body === 'ping your phone' && note.url.includes('/messages/dm/')
+      && !note.url.includes(`bob-${RUN}`), JSON.stringify(note)); // the DM is linked by the sender's identity, not its name
+    // Looking at that conversation in the console: no push for it.
+    const bobKey = (await admin('GET', '/state')).data.peers.find(p => p.name === `bob-${RUN}`)?.key;
+    await admin('GET', `/state?as=${pushHuman}&viewing=${encodeURIComponent(`dm:${bobKey}`)}`);
+    const pushesBefore = pushes.length;
+    await B.call('send_message', { to: pushHuman, message: 'you are already reading this' });
+    await sleep(800);
+    check('no push for the conversation the operator has on screen', pushes.length === pushesBefore, String(pushes.length - pushesBefore));
+    await admin('GET', `/state?as=${pushHuman}&viewing=other`);
     const [, jwt, k] = String(p1?.headers.authorization).match(/^vapid t=([^,]+), k=(.+)$/) ?? [];
     const raw = Buffer.from(key, 'base64url');
     const vapidKey = crypto.createPublicKey({ key: { kty: 'EC', crv: 'P-256', x: raw.subarray(1, 33).toString('base64url'), y: raw.subarray(33).toString('base64url') }, format: 'jwk' });

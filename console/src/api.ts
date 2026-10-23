@@ -201,8 +201,21 @@ export async function adminCall<T>(session: Session, method: 'GET' | 'POST', pat
   return data as T;
 }
 
-export const fetchState = (s: Session, since?: { id: number; ts: number }) =>
-  adminCall<HubState>(s, 'GET', `/state?as=${encodeURIComponent(s.name)}&limit=500${since ? `&since_id=${since.id}&since_ts=${since.ts}` : ''}`);
+// The conversation on screen (named like the hub names it), so it doesn't push notifications for it.
+function onScreen(): string | null {
+  if (typeof document === 'undefined' || document.visibilityState !== 'visible') return null;
+  const [page, a, b, c] = location.hash.replace(/^#\/?/, '').split('/');
+  if (page === 'messages' && a === 'dm' && b) return `dm:${decodeURIComponent(b)}`;
+  if (page === 'messages' && a === 'chat' && b) return `chat:${b}`;
+  if (page === 'projects' && a && (!b || b === 'chat') && !c) return `project:${decodeURIComponent(a)}`;
+  return null;
+}
+
+export const fetchState = (s: Session, since?: { id: number; ts: number }) => {
+  const viewing = onScreen();
+  return adminCall<HubState>(s, 'GET', `/state?as=${encodeURIComponent(s.name)}&limit=500${since ? `&since_id=${since.id}&since_ts=${since.ts}` : ''}` +
+    (viewing ? `&viewing=${encodeURIComponent(viewing)}` : ''));
+};
 
 // Merge an incremental poll into the previous state (messages keyed by id, newest first, capped).
 export function mergeState(prev: HubState | null, next: HubState): HubState {

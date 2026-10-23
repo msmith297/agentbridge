@@ -574,8 +574,13 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
     return sent;
   }
 
-  function pushToNames(names, data, opts) {
-    const lower = [...new Set(names.map(n => n.toLowerCase()))];
+  // What each operator's console has on screen right now (it says so with every poll while visible):
+  // no push for the conversation they're already looking at.
+  const viewing = new Map(); // lower-case operator name -> { conv, at }
+  const isViewing = (name, conv) => { const v = viewing.get(name); return Boolean(conv && v && v.conv === conv && v.at > now() - 15_000); };
+
+  function pushToNames(names, data, opts, conv = null) {
+    const lower = [...new Set(names.map(n => n.toLowerCase()))].filter(n => !isViewing(n, conv));
     if (!lower.length) return Promise.resolve([]);
     return pushTo(`lower(name) IN (${lower.map(() => '?').join(',')})`, lower, data, opts);
   }
@@ -921,14 +926,17 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
     for (const t of notified) if (t.kind !== 'human' && t.session_id) { const by = requestRevive(getPeer(t.id) ?? t); if (by) reviving[t.name] = by; }
     // Notify recipients with push notifications on (the operator's browsers; agents have none).
     const chatTitle = chatId ? db.get('SELECT title FROM chats WHERE id = ?', chatId)?.title : null;
-    const where = chatId ? ` in #${chatTitle}` : project ? ` in ${project}` : '';
-    const url = chatId ? `/#/messages/chat/${chatId}` : project ? `/#/projects/${encodeURIComponent(project)}`
-      : `/#/messages/dm/${encodeURIComponent(fromName)}`;
+    // Tapping it opens the message's own conversation: its chat, its project chat (a message to the
+    // project or a reply in it), else the DM with the sender (by identity: names change).
+    const where = chatId ? ` in #${chatTitle}` : inProject ? ` in ${inProject}` : '';
+    const conv = chatId ? `chat:${chatId}` : inProject ? `project:${inProject}` : `dm:${fromKey || fromName}`; // as the console names it
+    const url = chatId ? `/#/messages/chat/${chatId}` : inProject ? `/#/projects/${encodeURIComponent(inProject)}`
+      : `/#/messages/dm/${encodeURIComponent(fromKey || fromName)}`;
     pushToNames(targets.map(t => t.name).filter(n => n.toLowerCase() !== fromName.toLowerCase()), {
       title: `${fromName}${where}`,
       body: text.length > 300 ? `${text.slice(0, 300)}…` : text,
       url, tag: url,
-    });
+    }, undefined, conv);
     return {
       // Recipients by their full address when they share a display name, so it's clear which one got it.
       delivered_to: targets.map(t => {
@@ -1303,7 +1311,9 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
     // Everything the console renders, in one call. Also marks the operator online.
     'GET /state': ({ url }) => {
       const me = url.searchParams.get('as');
-      if (me) touchHuman(me);
+      const human = me ? touchHuman(me) : null;
+      const onScreen = url.searchParams.get('viewing');
+      if (human && onScreen) viewing.set(human.name.toLowerCase(), { conv: onScreen.slice(0, 300), at: now() });
       const limit = Math.min(Number(url.searchParams.get('limit')) || 200, 1000);
       // Incremental refresh: with since_id / since_ts the console gets only new messages and ones
       // read since its last poll, instead of re-reading the whole history every few seconds.
