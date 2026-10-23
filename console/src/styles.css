@@ -1081,3 +1081,7 @@ a.msg-to:hover { color: var(--accent); }
 .members-wrap .add-member { width: auto; min-width: 150px; }
 .members-wrap .add-member .picker-button { padding: 5px 12px; font-size: 13px; }
 .member-row .link { margin-left: auto; }
+
+/* Web links in messages */
+.msg-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.msg-link:hover { text-decoration-thickness: 2px; }

@@ -25,6 +25,7 @@ interface Props {
 const SYSTEM = 'agent-bridge';
 const go = (hash: string) => { location.hash = hash; };
 const dmHash = (key: string) => `/messages/dm/${encodeURIComponent(key)}`;
+const URL_RE = /(https?:\/\/[^\s<>"']*[^\s<>"'.,;:!?)\]])/;
 
 // The other side of a direct message, by stable identity. Older messages have no keys: use the
 // agent that holds that name now if there's exactly one, else the name itself ("name:…").
@@ -459,14 +460,17 @@ export function Feed({ entries, state, session, me, view, all, labels, onChanged
     setTimeout(() => el.classList.remove('flash'), 1400);
   };
   // "#1490" in a message links to that message when it's in this view.
+  // Web links open in a new tab (trailing punctuation stays text).
   const linkRefs = (node: ReactNode): ReactNode => {
     const parts = Array.isArray(node) ? node : [node];
-    return parts.map((part, i) => typeof part !== 'string' ? part : part.split(/(#\d{1,7}\b)/).map((bit, j) => {
-      const id = /^#\d+$/.test(bit) ? Number(bit.slice(1)) : 0;
-      return id && byId.has(id)
-        ? <a key={`${i}-${j}`} className="msg-ref" href={`#m${id}`} onClick={e => { e.preventDefault(); jump(id); }}>{bit}</a>
-        : bit;
-    }));
+    return parts.map((part, i) => typeof part !== 'string' ? part : part.split(URL_RE).map((chunk, u) => u % 2 === 1
+      ? <a key={`${i}-u${u}`} className="msg-link" href={chunk} target="_blank" rel="noopener noreferrer">{chunk}</a>
+      : chunk.split(/(#\d{1,7}\b)/).map((bit, j) => {
+        const id = /^#\d+$/.test(bit) ? Number(bit.slice(1)) : 0;
+        return id && byId.has(id)
+          ? <a key={`${i}-${u}-${j}`} className="msg-ref" href={`#m${id}`} onClick={e => { e.preventDefault(); jump(id); }}>{bit}</a>
+          : bit;
+      })));
   };
   // Reply: in "All messages", open the message's conversation and reply there.
   const reply = (m: Message, convo: string) => {
