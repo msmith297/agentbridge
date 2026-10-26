@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { askManagersToUpdate, removePeer, renamePeer, setApprovalMode, setIdentity, setKeepAwake, setListening, setRole, type ApprovalMode, type HubState, type Peer, type Session } from '../api';
-import { Avatar, isBusy, statusText } from '../components/Identity';
+import { appMark, Avatar, isBusy, statusText } from '../components/Identity';
 import { ConfirmButton } from '../components/ConfirmButton';
 import { ago, folderName } from '../format';
 
@@ -299,7 +299,8 @@ function IdentityEditor({ peer, session, onDone }: { peer: Peer; session: Sessio
 
 // "claude" + app "claude-2" → "Claude Code · Claude 2 app"; "codex" → "Codex".
 function agentKind(p: Peer) {
-  const kind = p.kind === 'claude' ? 'Claude Code' : p.kind === 'codex' ? 'Codex' : p.kind ?? 'Agent';
+  const title = (s: string) => s.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const kind = p.kind === 'claude' ? 'Claude Code' : p.kind === 'codex' ? 'Codex' : appMark(p)?.label ?? (p.kind ? title(p.kind) : 'Agent');
   if (!p.app || p.app === p.kind) return kind;
   const app = p.app.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   return `${kind} · ${app} app`;

@@ -137,6 +137,12 @@ const BACKFILL = [
   // reply to a project message belongs in the project chat.
   `UPDATE messages SET project = NULL WHERE project IS NOT NULL AND chat_id IS NULL AND reply_to IS NULL
    AND (to_key LIKE 'human:%' OR to_name IN (SELECT name FROM peers WHERE kind = 'human'))`,
+  // Conversations with an agent from before it had a session (keyed by its process id) join the
+  // session's conversation.
+  `UPDATE messages SET from_key = (SELECT p.session_id FROM peers p WHERE p.id = messages.from_key)
+   WHERE from_key IN (SELECT id FROM peers WHERE session_id IS NOT NULL)`,
+  `UPDATE messages SET to_key = (SELECT p.session_id FROM peers p WHERE p.id = messages.to_key)
+   WHERE to_key IN (SELECT id FROM peers WHERE session_id IS NOT NULL)`,
   // Replies to project messages whose tag the earlier version of the line above removed.
   `UPDATE messages SET project = (SELECT p.project FROM messages p WHERE p.id = messages.reply_to)
    WHERE project IS NULL AND chat_id IS NULL AND reply_to IS NOT NULL
@@ -488,6 +494,11 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
   // Link an agent-bridge server (peer) to its agent session. If the session belonged to another row
   // before (its server restarted), that row's name and waiting mail carry over.
   function linkSession(peer, sessionId) {
+    // Its identity was its process id until now: its conversations move to the session's identity.
+    if (!peer.session_id) {
+      db.run('UPDATE messages SET from_key = ? WHERE from_key = ?', sessionId, peer.id);
+      db.run('UPDATE messages SET to_key = ? WHERE to_key = ?', sessionId, peer.id);
+    }
     const prior = db.get('SELECT * FROM peers WHERE session_id = ? AND id != ? ORDER BY last_seen DESC LIMIT 1', sessionId, peer.id);
     db.run('UPDATE peers SET session_id = NULL WHERE session_id = ? AND id != ?', sessionId, peer.id);
     db.run('UPDATE peers SET session_id = ?, last_seen = ? WHERE id = ?', sessionId, now(), peer.id);
@@ -857,7 +868,10 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
     // A reply to a project message stays in the project chat (to its sender if it names no one).
     const parent = !chatId && reply ? db.get('SELECT from_name, project FROM messages WHERE id = ?', reply) : null;
     const replyProject = parent?.project && !names.includes('*') ? parent.project : null;
-    if (replyProject && !names.length) names.push(parent.from_name);
+    if (replyProject && !names.length) {
+      // A reply to a system notice there (e.g. "added you to project") goes to the project chat.
+      if (parent.from_name === SYSTEM_SENDER) { names.push('*'); project = replyProject; } else names.push(parent.from_name);
+    }
     let targets;
     const quiet = new Set(); // lower-case names that get it as FYI (no wake-up)
     if (chatId) {
@@ -890,6 +904,11 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
         if (n.toLowerCase() === fromName.toLowerCase() || targets.some(t => t.name.toLowerCase() === n.toLowerCase())) continue;
         const outsider = resolveName(n, { exact: admin });
         if (outsider && outsider.kind !== 'human' && !targets.some(t => t.name === outsider.name)) targets.push(outsider);
+      }
+      // An agent alone in a project still posts in its chat: the operator reads it there.
+      if (!targets.length && project && !admin) {
+        const operator = db.get(`SELECT * FROM peers WHERE kind = 'human' ORDER BY last_seen DESC LIMIT 1`);
+        if (operator) targets = [operator];
       }
       if (!targets.length) {
         throw new HttpError(400, project ? `nobody is in project "${project}" yet: @mention agents to invite them` : 'no agents are online');
@@ -1596,7 +1615,7 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
             setProject(peer, slug);
             projects.event(slug, actor, 'member', `added ${peer.name}${before && before !== slug ? ` (from ${before})` : ''}`);
             notify(peer.name, `${actor} added you to project "${name}" (${slug})${before && before !== slug ? `; you left "${before}"` : ''}. ` +
-              'Read its overview with the project tool (action overview) and follow its chat; reply to project messages with reply_to so it stays there.');
+              'Read its overview with the project tool (action overview) and follow its chat; reply to project messages with reply_to so it stays there.', slug);
           } else if (before === slug) {
             setProject(peer, null);
             projects.event(slug, actor, 'member', `removed ${peer.name}`);

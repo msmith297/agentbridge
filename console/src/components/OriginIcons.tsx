@@ -1,5 +1,6 @@
 import type { HubState, Peer } from '../api';
 import { nameHue } from './Mentions';
+import { appMark } from './Identity';
 
 // Two tiny glyphs for where an agent runs: its computer (laptop / desktop) and its AI account
 // (Claude / ChatGPT / API key), each tinted per computer or account so twins are easy to tell
@@ -32,11 +33,15 @@ export function OriginIcons({ peer, state }: { peer?: Peer | null; state: HubSta
   // Computers have fixed colours by platform: Windows dark blue, Mac light purple (others by name).
   const laptop = isLaptop(`${machine} ${peer.device}`);
   const platform = peer.os === 'win32' ? 'windows' : peer.os === 'darwin' ? 'mac' : null;
+  const mark = appMark(peer);
   return (
     <span className="origin-icons" title={`${machine}${accountName ? ` · ${accountName}` : ''}`}>
       <span className={`origin-icon${platform ? ` pc-${platform}` : ''}`} style={{ ['--h' as string]: nameHue('device', peer.device) }} aria-label={`Computer: ${machine}`}>
         <ComputerGlyph laptop={platform ? platform === 'mac' : laptop} />
       </span>
+      {!accountName && mark ? (
+        <span className="origin-icon app-mark" style={{ ['--h' as string]: 2 }} aria-label={`App: ${mark.label}`}><b className="app-mark-text">{mark.text}</b></span>
+      ) : null}
       {accountName ? (
         <span className="origin-icon" style={{ ['--h' as string]: nameHue('account', peer.account_id || accountName) }} aria-label={`Account: ${accountName}`}>
           <AccountGlyph provider={account?.provider ?? (peer.kind === 'codex' ? 'openai' : 'anthropic')} api={account?.type === 'api'} />

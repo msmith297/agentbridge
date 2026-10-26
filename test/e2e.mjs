@@ -671,8 +671,15 @@ try {
     && (await B.call('check_inbox')).includes(`in project "empty-${RUN}"`), JSON.stringify(invite.data));
   const added = await admin('POST', '/project', { action: 'add', project: `empty-${RUN}`, name: `bob-${RUN}`, as: human });
   const ovAdded = (await admin('POST', '/project', { action: 'overview', project: `empty-${RUN}`, as: human })).data;
+  const addNotice = await B.call('check_inbox');
   check('the operator adds an agent to a project, and it is told', added.status === 200 && ovAdded.members?.some(m => m.name === `bob-${RUN}`)
-    && (await B.call('check_inbox')).includes(`added you to project`), JSON.stringify(added.data));
+    && addNotice.includes(`added you to project`), JSON.stringify(added.data));
+  const noticeId = Number(addNotice.match(/#(\d+) from agent-bridge/)?.[1]);
+  await B.call('send_message', { reply_to: noticeId, message: 'joined, thanks' });
+  await B.call('send_message', { to: '*', message: 'only me in here' });
+  const ovReplies = (await admin('POST', '/project', { action: 'overview', project: `empty-${RUN}`, as: human })).data.messages ?? [];
+  check('an agent answering the "added you" notice answers in the project chat', ovReplies.some(m => m.body === 'joined, thanks'), JSON.stringify(ovReplies.map(m => m.body)));
+  check('an agent alone in a project still posts in its chat', ovReplies.some(m => m.body === 'only me in here'), JSON.stringify(ovReplies.map(m => m.body)));
   await admin('POST', '/project', { action: 'remove', project: `empty-${RUN}`, name: `bob-${RUN}`, as: human });
   await B.call('check_inbox');
   check('and takes it out again', !(await admin('POST', '/project', { action: 'overview', project: `empty-${RUN}`, as: human })).data.members?.some(m => m.name === `bob-${RUN}`));

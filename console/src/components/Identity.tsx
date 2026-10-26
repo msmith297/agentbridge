@@ -26,18 +26,27 @@ export function statusText(peer?: Peer | null) {
 // The name to show for an address (agents can share a display name; `name` stays unique).
 export const displayName = (state: HubState, name: string) => findPeer(state, name)?.display_name || name;
 
+// Agents from apps other than Claude Code / Codex get their app's mark (e.g. a SolidWorks add-in).
+export function appMark(peer?: Peer | null): { text: string; color: string; label: string } | null {
+  if (!peer || peer.kind === 'human' || peer.kind === 'claude' || peer.kind === 'codex') return null;
+  const hay = `${peer.kind ?? ''} ${peer.app ?? ''} ${peer.display_name ?? ''} ${peer.name}`;
+  if (/solid\s*works/i.test(hay)) return { text: 'SW', color: '#da291c', label: 'SolidWorks' };
+  return null;
+}
+
 export function Avatar({ name, peer, size = 20 }: { name: string; peer?: Peer | null; size?: number }) {
   const hue = nameHue('agent', name);
-  const color = peer?.color || `hsl(${hue} 55% 52%)`;
+  const mark = peer?.icon ? null : appMark(peer);
+  const color = peer?.color || mark?.color || `hsl(${hue} 55% 52%)`;
   const human = peer?.kind === 'human';
-  const glyph = peer?.icon || (human ? '👤' : (peer?.display_name || name).replace(/[^\p{L}\p{N}]/gu, '').slice(0, 1).toUpperCase() || '?');
+  const glyph = peer?.icon || (human ? '👤' : mark ? mark.text : (peer?.display_name || name).replace(/[^\p{L}\p{N}]/gu, '').slice(0, 1).toUpperCase() || '?');
   const busy = isBusy(peer);
   const status = statusText(peer);
   return (
     <span className={`avatar${peer?.icon || human ? ' emoji' : ''}${busy ? ` busy ${peer!.activity!.state}` : ''}`}
       title={status ? `${name}: ${status}` : undefined}
       style={{
-        width: size, height: size, fontSize: Math.round(size * (peer?.icon ? 0.62 : 0.5)),
+        width: size, height: size, fontSize: Math.round(size * (peer?.icon ? 0.62 : mark ? 0.4 : 0.5)), fontWeight: mark ? 800 : undefined,
         background: peer?.icon ? `color-mix(in srgb, ${color} 24%, var(--avatar-base, #fff))` : color,
         ['--ring' as string]: color, animationDelay: `-${hue % 9}s`,
       }}>
