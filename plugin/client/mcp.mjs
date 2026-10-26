@@ -123,7 +123,9 @@ function absorb(status) {
 }
 
 async function register() {
-  SESSION_ID = kind === 'claude' ? CLAUDE_SESSION_ID : null;
+  // Other hosts (e.g. the Unify3D SolidWorks add-in) can opt in to a stable session id, so a restart
+  // keeps the same identity, name, listening mode, project and DM thread. Codex links by hooks instead.
+  SESSION_ID = kind === 'claude' ? CLAUDE_SESSION_ID : kind === 'codex' ? null : process.env.AGENT_BRIDGE_SESSION_ID || null;
   absorb(await api('POST', '/register', {
     id: PEER_ID,
     name: myName || PROJECT.name || process.env.AGENT_BRIDGE_NAME || `${slug(path.basename(process.cwd()))}@${cfg.device}`,

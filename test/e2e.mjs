@@ -275,6 +275,18 @@ try {
   const A2 = await agent({ env: envA, client: 'claude-code', sessionId: claudeSession, name: `alice-${RUN}` });
   check('session prefs survive restart', A2.init.result.instructions.includes(`planner-${RUN}`) && A2.init.result.instructions.includes('listening until'), A2.init.result.instructions.slice(0, 300));
 
+  // Other MCP hosts (e.g. the SolidWorks add-in) keep one identity across restarts with AGENT_BRIDGE_SESSION_ID.
+  const hostEnv = { ...envA, AGENT_BRIDGE_SESSION_ID: `host-sess-${RUN}` };
+  const H1 = await agent({ env: hostEnv, client: 'unify3d-agent', name: `swhost-${RUN}` });
+  await H1.call('set_profile', { name: `swrenamed-${RUN}` });
+  await H1.stop();
+  const H2 = await agent({ env: hostEnv, client: 'unify3d-agent', name: `swhost-${RUN}` });
+  const hostRows = (await admin('GET', '/state')).data.peers.filter(p => p.name.endsWith(RUN) && p.name.startsWith('sw'));
+  check('other hosts keep one identity across restarts (AGENT_BRIDGE_SESSION_ID)',
+    hostRows.length === 1 && hostRows[0].key === `host-sess-${RUN}` && H2.init.result.instructions.includes(`swrenamed-${RUN}`),
+    JSON.stringify(hostRows.map(p => [p.name, p.key])));
+  await H2.stop();
+
   // Claude Code listening: turns end normally; a background listener (asyncRewake) wakes the agent.
   const claudeEvt = { session_id: claudeSession, cwd: TMP, hook_event_name: 'Stop' };
   const quickStop = await hook(envA, claudeEvt);
