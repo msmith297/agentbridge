@@ -12,10 +12,21 @@ interface Props {
 }
 
 // Three states: offline, online · listening, online · not listening.
-function Status({ peer }: { peer: Peer }) {
+// Listening, idle (its turn ended a while ago) and no listener has polled for its mail since then.
+const SILENT_MS = 3 * 60_000;
+function listenerSilent(p: Peer, now: number) {
+  if (p.waiting || p.activity?.state !== 'idle' || !p.activity.at || now - p.activity.at < SILENT_MS) return false;
+  return !p.polled_at || now - p.polled_at > SILENT_MS;
+}
+
+function Status({ peer, now }: { peer: Peer; now: number }) {
   const changed = peer.listen_changed_by && peer.listen_changed_at
     ? ` · listening last switched ${peer.listening ? 'on' : 'off'} by ${peer.listen_changed_by}, ${new Date(peer.listen_changed_at).toLocaleString()}` : '';
   if (!peer.online) return <span className="pill" title={changed.slice(3) || undefined}>offline</span>;
+  if (peer.listening && listenerSilent(peer, now)) {
+    const mins = Math.round((now - Math.max(peer.polled_at ?? 0, peer.activity?.at ?? 0)) / 60_000);
+    return <span className="pill warn" title={`Listening is on, but nothing has checked for its messages for ${mins} min since its turn ended: it won't wake until its next turn. Restarting the session usually fixes it.${changed}`}>listening · no listener</span>;
+  }
   if (peer.listening) {
     return <span className="pill live" title={(peer.waiting ? 'Replies to messages on its own'
       : 'Replies to messages on its own once its current turn ends') + changed}>online · listening</span>;
@@ -185,7 +196,7 @@ export function Agents({ state, session, onMessage, onChanged }: Props) {
                     </div>
                   </header>
                   <div className="agent-tags">
-                    <Status peer={p} />
+                    <Status peer={p} now={state.now} />
                     {p.role === 'manager' ? <span className="tag manager" title="Bridge Manager: revives offline sessions in its app and runs plugin updates for its computer + account">★ Bridge Manager</span> : null}
                     {p.keep_awake && p.kind === 'claude' ? <span className="tag" title="Stays awake: a tiny turn every 25 minutes keeps the Claude app from stopping it when idle">☀︎ Stays awake</span> : null}
                     <span className="tag" title={`What runs this agent: ${p.kind ?? 'agent'}${p.app && p.app !== p.kind ? ` in the "${p.app}" app` : ''}`}>{agentKind(p)}</span>

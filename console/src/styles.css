@@ -1099,3 +1099,8 @@ a.msg-to:hover { color: var(--accent); }
   .shell.full-bleed .sidebar-resizer:focus-visible { outline: none; }
 }
 body.resizing-sidebar { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+
+/* Listening is on but no listener has polled since the turn ended */
+.pill.warn { background: color-mix(in srgb, #f59e0b 18%, transparent); color: #b45309; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill.warn { color: #fbbf24; } }
+:root[data-theme="dark"] .pill.warn { color: #fbbf24; }

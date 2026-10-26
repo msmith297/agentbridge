@@ -25,6 +25,7 @@ export interface Peer {
   listen_changed_at: number | null;
   role: 'manager' | null;   // Bridge Manager of its computer + account + app
   keep_awake: boolean;
+  polled_at?: number | null; // when its listener last polled for mail (null: not since the hub started)
   os?: string | null;       // the agent's computer: win32 | darwin | linux (from its client)      // gets keepalive turns so the Claude app doesn't stop it when idle (default: Managers)
   display_name: string;     // what to show (may repeat across computers/accounts; `name` is the unique address)
   key: string;              // stable identity (survives renames, name clashes and restarts)

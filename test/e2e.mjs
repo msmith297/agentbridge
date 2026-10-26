@@ -304,6 +304,9 @@ try {
   const readLock = () => { try { return fs.readFileSync(lockFile, 'utf8'); } catch { return ''; } };
   const L1 = hookProc(envA, claudeEvt, ['--listen']);
   const firstLock = await until(readLock);
+  await sleep(500);
+  const polled = (await admin('GET', '/state')).data.peers.find(p => p.name === `planner-${RUN}`);
+  check('the console sees when a listener last polled', polled?.waiting && polled.polled_at > Date.now() - 60_000, JSON.stringify({ waiting: polled?.waiting, polled_at: polled?.polled_at }));
   const L2 = hookProc(envA, claudeEvt, ['--listen']); // a later turn end replaces L1
   await until(() => readLock() && readLock() !== firstLock);
   await sleep(300);

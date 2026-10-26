@@ -219,7 +219,9 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
     const key = name.toLowerCase();
     // Stop hooks re-poll in ~5-minute chunks; bridge the short gap between chunks.
     const waiting = waiters.has(key) || now() - (lastHookWait.get(key) || 0) < 10_000;
-    return { listening: (listenUntil || 0) > now(), waiting };
+    // When something last polled for its mail on its behalf: a listening agent whose listener died
+    // (no polls for a while after its turn ended) won't wake, and the console says so.
+    return { listening: (listenUntil || 0) > now(), waiting, polled_at: waiters.has(key) ? now() : lastHookWait.get(key) || null };
   }
 
   function wake(name) {
