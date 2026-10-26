@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { createProject, listProjects, type HubState, type ProjectSummary, type Session } from '../api';
 import { ago } from '../format';
+import { useSidebarWidth } from '../components/SidebarResizer';
 import { Project, type ProjectTab } from './Project';
 
 // Projects, laid out like conversations: the project list on the left, the selected project
@@ -43,10 +44,12 @@ export function Projects({ state, session, slug, tab, onChanged }: {
 
   // Phones show the project list or the open project, not both.
   const [listOpen, setListOpen] = useState(!slug);
+  const sidebar = useSidebarWidth();
   useEffect(() => setListOpen(!slug), [slug]);
 
   return (
-    <section className={`msg-layout${listOpen ? ' list-open' : ''}`}>
+    <section className={`msg-layout${listOpen ? ' list-open' : ''}`} style={sidebar.style}>
+      {sidebar.handle}
       <aside className="card conv-list" onClick={e => { if ((e.target as HTMLElement).closest('.conv.active')) setListOpen(false); }}>
         <div className="conv-head">
           Projects

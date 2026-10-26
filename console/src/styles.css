@@ -966,7 +966,7 @@ a.msg-to:hover { color: var(--accent); }
 .shell.full-bleed { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
 .shell.full-bleed > .banner, .shell.full-bleed > .update-banner { flex: none; }
 .shell.full-bleed .content { flex: 1; min-height: 0; max-width: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.shell.full-bleed .msg-layout { flex: 1; min-height: 0; height: auto; gap: 0; grid-template-columns: 280px minmax(0, 1fr); }
+.shell.full-bleed .msg-layout { flex: 1; min-height: 0; height: auto; gap: 0; grid-template-columns: var(--sidebar-w, 280px) minmax(0, 1fr); position: relative; }
 @media (min-width: 761px) { .shell.full-bleed .msg-layout { height: auto; } }
 
 /* Sidebar: same surface as the top bar, flush to the left edge, divided by one hairline. */
@@ -1089,3 +1089,13 @@ a.msg-to:hover { color: var(--accent); }
 /* App mark (agents from other apps, e.g. SolidWorks) in sidebar rows */
 .origin-icon.app-mark { color: #fff; background: #da291c; }
 .app-mark-text { position: static !important; background: none !important; font-size: 7.5px; font-weight: 800; letter-spacing: -.02em; color: #fff; min-width: 0; height: auto; line-height: 1; }
+
+/* Sidebar resize handle (Messages / Projects) */
+.sidebar-resizer { display: none; }
+@media (min-width: 761px) {
+  .shell.full-bleed .sidebar-resizer { display: block; position: absolute; top: 0; bottom: 0; width: 9px; margin-left: -5px; cursor: col-resize; z-index: 6; touch-action: none; }
+  .shell.full-bleed .sidebar-resizer::after { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: transparent; transition: background .15s, width .15s, left .15s; }
+  .shell.full-bleed .sidebar-resizer:hover::after, .shell.full-bleed .sidebar-resizer:focus-visible::after, body.resizing-sidebar .sidebar-resizer::after { left: 3px; width: 3px; background: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .shell.full-bleed .sidebar-resizer:focus-visible { outline: none; }
+}
+body.resizing-sidebar { cursor: col-resize; user-select: none; -webkit-user-select: none; }

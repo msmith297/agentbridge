@@ -6,6 +6,7 @@ import {
 } from '../api';
 import { ago, folderName, stamp } from '../format';
 import { ConfirmButton } from '../components/ConfirmButton';
+import { useSidebarWidth } from '../components/SidebarResizer';
 import { openLightbox } from '../components/Lightbox';
 import { OriginIcons } from '../components/OriginIcons';
 import { Avatar, displayName, Identity, MemberStack, PeerPicker, TypingRow, useCloseOnOutsideClick } from '../components/Identity';
@@ -144,11 +145,13 @@ export function Messages({ state, session, view, onChanged }: Props) {
   // Phones show the conversation list or the open conversation, not both.
   const viewKey = convKey(view);
   const [listOpen, setListOpen] = useState(false);
+  const sidebar = useSidebarWidth();
   useEffect(() => setListOpen(false), [viewKey]);
   const totalUnread = dms.reduce((n, d) => n + d.unread, 0) + chats.reduce((n, c) => n + chatUnread(c), 0);
 
   return (
-    <section className={`msg-layout${listOpen ? ' list-open' : ''}`}>
+    <section className={`msg-layout${listOpen ? ' list-open' : ''}`} style={sidebar.style}>
+      {sidebar.handle}
       <aside className="card conv-list" onClick={e => { if ((e.target as HTMLElement).closest('.conv')) setListOpen(false); }}>
         <button className={`conv${view.kind === 'all' ? ' active' : ''}`} onClick={() => go('/messages')}>All messages</button>
 
