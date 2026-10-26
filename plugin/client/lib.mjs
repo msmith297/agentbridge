@@ -212,7 +212,8 @@ export function formatMessages(msgs) {
   const direct = msgs.filter(m => !m.quiet);
   const fyi = msgs.filter(m => m.quiet);
   const parts = direct.map(m => `${header(m)}:\n${m.body}` +
-    (m.attachments?.length ? `\n${m.attachments.map(formatAttachment).join('\n')}` : ''));
+    (m.attachments?.length ? `\n${m.attachments.map(formatAttachment).join('\n')}` +
+      (m.attachments.some(a => a.local_path) ? `\n(To pass these on to another agent: send_message with forward_attachments: ${m.id}, or attach their paths.)` : '') : ''));
   if (fyi.length) {
     const shown = fyi.slice(-FYI_SHOWN);
     parts.push('FYI: group messages addressed to others (you were not @mentioned). Don\'t act on or reply to them unless ' +

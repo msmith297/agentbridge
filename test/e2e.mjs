@@ -227,6 +227,15 @@ try {
   check('same-named attachments are saved as separate files', twinPaths.length === 2 && twinPaths[0] !== twinPaths[1] &&
     fs.readFileSync(twinPaths[0], 'utf8') === 'first' && fs.readFileSync(twinPaths[1], 'utf8') === 'second', JSON.stringify(twinPaths));
   await B.call('send_message', { to: `martin-${RUN}`, message: 'got your files' }); // agents answer the operator
+  // Agents pass files on: forward a received message's attachments by its id, no paths needed.
+  await admin('POST', '/send', { from: `martin-${RUN}`, to: `bob-${RUN}`, message: 'please forward this spec', attachments: [noteUpload.id] });
+  const toForward = await B.call('check_inbox');
+  const fwdId = Number(toForward.match(/#(\d+) from martin[^\n]*\n+please forward this spec/)?.[1]);
+  check('received files come with a hint to pass them on', toForward.includes(`forward_attachments: ${fwdId}`), toForward.slice(0, 400));
+  const fwd = await B.call('send_message', { to: `alice-${RUN}`, message: 'here is the spec Martin sent', forward_attachments: fwdId });
+  const aliceGot = await A.call('check_inbox');
+  check('an agent forwards a received file to another agent by message id', fwd.includes('1 attachment') && aliceGot.includes('here is the spec Martin sent') && aliceGot.includes('saved to'), fwd + aliceGot.slice(0, 300));
+  await B.call('send_message', { to: `martin-${RUN}`, message: 'forwarded' });
   const consoleView = await admin('GET', '/state');
   const sentMsg = consoleView.data.messages.find(m => m.body === 'see screenshot');
   const dlRes = await fetch(`${HUB}/admin/attachments/download?attachment=${sentMsg?.attachments?.[0]?.id}`, { headers: { authorization: `Bearer ${ADMIN}`, ...ACCESS_HEADERS } });

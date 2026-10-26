@@ -1271,8 +1271,17 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
 
     'POST /send': ({ body, auth }) => {
       const peer = requirePeer(body, auth);
-      return send({ from: peer.name, fromKey: peer.session_id || peer.id, fromDevice: peer.device, to: body.to, chat: body.chat, message: body.message, replyTo: body.reply_to,
-        project: peer.project || null, attachmentIds: body.attachments, mentions: body.mentions });
+      // forward_attachments: a message the agent received or sent; its files go along (no re-upload).
+      const ids = [].concat(body.attachments || []);
+      if (body.forward_attachments != null) {
+        const src = db.get(`SELECT attachments FROM messages WHERE id = ? AND (to_name = ? COLLATE NOCASE OR from_name = ? COLLATE NOCASE)`,
+          Number(body.forward_attachments), peer.name, peer.name);
+        if (!src) throw new HttpError(404, `no message #${body.forward_attachments} of yours to forward attachments from`);
+        for (const a of src.attachments ? JSON.parse(src.attachments) : []) if (!ids.includes(a.id)) ids.push(a.id);
+      }
+      const r = send({ from: peer.name, fromKey: peer.session_id || peer.id, fromDevice: peer.device, to: body.to, chat: body.chat, message: body.message, replyTo: body.reply_to,
+        project: peer.project || null, attachmentIds: ids, mentions: body.mentions });
+      return { ...r, attachments: ids.length };
     },
 
     'POST /chats': ({ body, auth }) => chatAction(requirePeer(body, auth).name, body),
