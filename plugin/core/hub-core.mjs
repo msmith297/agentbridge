@@ -121,6 +121,9 @@ const MIGRATIONS = [
   'ALTER TABLE approvals ADD COLUMN kind TEXT',
   'ALTER TABLE approvals ADD COLUMN payload TEXT',
   'ALTER TABLE approvals ADD COLUMN answers TEXT',
+  // When mail was last handed out under a lease (e.g. to a background listener's wake-up): the agent
+  // saw it then, even if the turn only confirms it at its end.
+  'ALTER TABLE messages ADD COLUMN leased_at INTEGER',
 ];
 const PEER_KEY = 'coalesce(p.session_id, p.id)';
 const BACKFILL = [
@@ -417,8 +420,9 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
   }
 
   const roundsInWindow = p => (now() - (p.rounds_since || 0) > ROUNDS_WINDOW_MS ? 0 : p.auto_rounds || 0);
-  const unreadCount = name =>
-    db.get('SELECT count(*) AS n FROM messages WHERE to_name = ? COLLATE NOCASE AND delivered_at IS NULL', name).n;
+  // Mail it can take now: not what a wake-up already handed it (leased, confirmed at the turn's end).
+  const unreadCount = name => db.get(`SELECT count(*) AS n FROM messages WHERE to_name = ? COLLATE NOCASE
+    AND delivered_at IS NULL AND (leased_until IS NULL OR leased_until < ?)`, name, now()).n;
   const urgentCount = name => db.get(`SELECT count(*) AS n FROM messages WHERE to_name = ? COLLATE NOCASE
     AND delivered_at IS NULL AND (leased_until IS NULL OR leased_until < ?) AND coalesce(quiet, 0) = 0`, name, now()).n;
 
@@ -1012,8 +1016,8 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
       WHERE to_name = ? COLLATE NOCASE AND delivered_at IS NULL AND (leased_until IS NULL OR leased_until < ?)
       ORDER BY id LIMIT 100`, name, now()).map(withAttachments).map(m => ({ ...m, from_machine: deviceLabel(m.from_device) }));
     if (msgs.length) {
-      db.run(`UPDATE messages SET leased_until = ? WHERE id IN (${msgs.map(() => '?').join(',')})`,
-        now() + leaseMs, ...msgs.map(m => m.id));
+      db.run(`UPDATE messages SET leased_until = ?, leased_at = ? WHERE id IN (${msgs.map(() => '?').join(',')})`,
+        now() + leaseMs, now(), ...msgs.map(m => m.id));
     }
     return msgs;
   }
@@ -1074,8 +1078,10 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
   function ack(name, ids) {
     ids = (Array.isArray(ids) ? ids : []).map(Number).filter(Number.isFinite);
     if (!ids.length) return { acked: 0 };
-    db.run(`UPDATE messages SET delivered_at = ? WHERE to_name = ? COLLATE NOCASE AND delivered_at IS NULL
-      AND id IN (${ids.map(() => '?').join(',')})`, now(), name, ...ids);
+    // Mail handed out under a still-running lease was seen when it was handed out: count that as its
+    // delivery, so replies the agent sent before confirming it (at its turn's end) answer it.
+    db.run(`UPDATE messages SET delivered_at = CASE WHEN leased_at IS NOT NULL AND leased_until >= ? THEN leased_at ELSE ? END
+      WHERE to_name = ? COLLATE NOCASE AND delivered_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`, now(), now(), name, ...ids);
     return { acked: ids.length };
   }
 

@@ -530,6 +530,16 @@ try {
   await A2.call('send_message', { to: human, message: 'on it' });
   const nudge3 = (await turn('Stop')).out;
   check('an answered operator message needs no reminder', !nudge3?.reason?.includes('second ask'), JSON.stringify(nudge3).slice(0, 200));
+  // A wake-up's mail is only confirmed at the turn's end when the host has no prompt hook (e.g. the
+  // SolidWorks add-in): a reply sent during that turn still answers it, and it isn't "unread" meanwhile.
+  const wakeL = hookProc(envA, { session_id: claudeSession, cwd: TMP, hook_event_name: 'Stop' }, ['--listen']);
+  await sleep(500);
+  await admin('POST', '/send', { from: human, to: `planner-${RUN}`, message: 'third ask' });
+  const woke = await wakeL.done;
+  const wokeReply = await A2.call('send_message', { to: human, message: 'done' });
+  const nudge4 = (await turn('Stop')).out;
+  check('a reply in a woken turn answers mail confirmed at its end', woke.code === 2 && !nudge4?.reason?.includes('third ask'), JSON.stringify(nudge4).slice(0, 200));
+  check('mail handed to a wake-up is not reported as unread', !wokeReply.includes('unread message'), wokeReply);
   // One operator on every device: other names merge into one and stay reachable as aliases.
   const oldName = `phone-${RUN}`;
   await admin('POST', '/send', { from: oldName, to: `planner-${RUN}`, message: 'sent from the phone' });
