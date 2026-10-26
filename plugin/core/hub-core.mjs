@@ -580,9 +580,15 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
   // ---- push notifications (to the operator's browsers) ----
 
   // Push `data` to the subscriptions matching `where`; drops ones the push service says are gone.
+  // An operator actively using a desktop console (on screen, recent mouse/keyboard input) doesn't need
+  // their phone buzzing as well: phone pushes wait while that lasts.
+  const activeDesktop = new Map(); // lower-case operator name -> last active-desktop poll
+  const atDesktop = name => (activeDesktop.get(String(name).toLowerCase()) || 0) > now() - 60_000;
+  const isPhone = sub => /iPhone|iPad|iPod|Android|Mobile/i.test(sub.user_agent || '');
+
   function pushTo(where, args, data, opts) {
     if (!pusher) return Promise.resolve([]);
-    const subs = db.all(`SELECT * FROM push_subscriptions WHERE ${where}`, ...args);
+    const subs = db.all(`SELECT * FROM push_subscriptions WHERE ${where}`, ...args).filter(sub => !(isPhone(sub) && atDesktop(sub.name)));
     const sent = Promise.all(subs.map(sub => pusher(sub, data, opts).then(status => {
       if (status === 404 || status === 410) db.run('DELETE FROM push_subscriptions WHERE endpoint = ?', sub.endpoint);
       else if (status < 300) db.run('UPDATE push_subscriptions SET last_ok = ? WHERE endpoint = ?', now(), sub.endpoint);
@@ -1345,6 +1351,7 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
       const human = me ? touchHuman(me) : null;
       const onScreen = url.searchParams.get('viewing');
       if (human && onScreen) viewing.set(human.name.toLowerCase(), { conv: onScreen.slice(0, 300), at: now() });
+      if (human && url.searchParams.get('active') === 'desktop') activeDesktop.set(human.name.toLowerCase(), now());
       const limit = Math.min(Number(url.searchParams.get('limit')) || 200, 1000);
       // Incremental refresh: with since_id / since_ts the console gets only new messages and ones
       // read since its last poll, instead of re-reading the whole history every few seconds.
@@ -1578,6 +1585,7 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
         db.run('DELETE FROM identities WHERE name = ?', n);
         db.run('DELETE FROM hidden_conversations WHERE owner = ?', n);
         db.run('DELETE FROM human_aliases WHERE alias = ? COLLATE NOCASE OR name = ? COLLATE NOCASE', n, n);
+        db.run('DELETE FROM push_subscriptions WHERE name = ? COLLATE NOCASE', n);
       }
       db.run('DELETE FROM chats WHERE id NOT IN (SELECT DISTINCT chat_id FROM chat_members)');
       return { purged: names.length };

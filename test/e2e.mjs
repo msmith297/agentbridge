@@ -451,6 +451,23 @@ try {
     await nextPush(4);
     const gone = await until(async () => (await admin('POST', '/push/test', { endpoint: subscription.endpoint })).status === 404);
     check('subscriptions the push service rejects are dropped', gone);
+    // Actively using a desktop console: the phone stays quiet, the desktop still gets it. (Its own
+    // operator, so the other push checks aren't affected.)
+    {
+      const deskHuman = `desk-${RUN}`;
+      const sub = (path, ua) => fetch(`${HUB}/admin/push/subscribe`, { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json',
+        'user-agent': ua, ...ACCESS_HEADERS }, body: JSON.stringify({ as: deskHuman, subscription: { ...subscription, endpoint: `${pushBase}/${path}` } }) });
+      pushStatus = 201;
+      await sub('desk-mac', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15');
+      await sub('desk-phone', 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) Mobile');
+      await admin('GET', `/state?as=${deskHuman}&active=desktop`);
+      const atDeskBefore = pushes.length;
+      await B.call('send_message', { to: deskHuman, message: 'you are at your desk' });
+      await sleep(800);
+      const atDesk = pushes.slice(atDeskBefore).map(p => p.path);
+      check('no phone notifications while the operator is active at a desktop console', atDesk.includes('/desk-mac') && !atDesk.includes('/desk-phone'), JSON.stringify(atDesk));
+      await admin('POST', '/peers/purge', { names: [deskHuman] });
+    }
     pushServer.close();
   }
   await hook(envA, { ...claudeEvt, hook_event_name: 'UserPromptSubmit' }); // confirms it

@@ -201,6 +201,15 @@ export async function adminCall<T>(session: Session, method: 'GET' | 'POST', pat
   return data as T;
 }
 
+// Actively at a desktop console (on screen, mouse/keyboard used in the last 2 minutes): the hub holds
+// back phone notifications meanwhile.
+let lastInput = Date.now();
+if (typeof window !== 'undefined') {
+  for (const ev of ['pointerdown', 'pointermove', 'keydown', 'wheel', 'scroll']) window.addEventListener(ev, () => { lastInput = Date.now(); }, { passive: true, capture: true });
+}
+const atDesktop = () => typeof document !== 'undefined' && document.visibilityState === 'visible' && Date.now() - lastInput < 120_000
+  && typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches && !/iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
+
 // The conversation on screen (named like the hub names it), so it doesn't push notifications for it.
 function onScreen(): string | null {
   if (typeof document === 'undefined' || document.visibilityState !== 'visible') return null;
@@ -214,7 +223,7 @@ function onScreen(): string | null {
 export const fetchState = (s: Session, since?: { id: number; ts: number }) => {
   const viewing = onScreen();
   return adminCall<HubState>(s, 'GET', `/state?as=${encodeURIComponent(s.name)}&limit=500${since ? `&since_id=${since.id}&since_ts=${since.ts}` : ''}` +
-    (viewing ? `&viewing=${encodeURIComponent(viewing)}` : ''));
+    (viewing ? `&viewing=${encodeURIComponent(viewing)}` : '') + (atDesktop() ? '&active=desktop' : ''));
 };
 
 // Merge an incremental poll into the previous state (messages keyed by id, newest first, capped).
