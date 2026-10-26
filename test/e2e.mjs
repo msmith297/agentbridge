@@ -517,6 +517,21 @@ try {
   const byKey = await admin('POST', '/send', { from: human, to: [`old-address-${RUN}`], to_keys: { [`old-address-${RUN}`]: claudeSession }, message: 'by identity' });
   check('console DMs reach the agent by identity after its address changed', byKey.data.delivered_to?.[0] === `planner-${RUN}`, JSON.stringify(byKey));
   await A2.call('check_inbox');
+  // A wake-up's delivery is back-dated to when the mail was handed over; the console's incremental
+  // refresh still picks it up (it looks at when the read was recorded).
+  {
+    const bobId = (await admin('GET', '/state')).data.peers.find(p => p.name === `bob-${RUN}`)?.id;
+    const bapi = (p, b) => fetch(`${HUB}/api${p}`, { method: 'POST', headers: { authorization: `Bearer ${devB.data.token}`, 'content-type': 'application/json', ...ACCESS_HEADERS }, body: JSON.stringify(b) }).then(r => r.json());
+    const sent = await admin('POST', '/send', { from: human, to: [`bob-${RUN}`], message: 'read later' });
+    const leased = await bapi('/inbox', { id: bobId, lease_seconds: 60 });
+    const before = (await admin('GET', `/state?as=${human}`)).data;
+    await sleep(30);
+    await bapi('/ack', { id: bobId, ids: (leased.messages ?? []).map(m => m.id) });
+    const inc = (await admin('GET', `/state?as=${human}&since_id=${Math.max(...before.messages.map(m => m.id))}&since_ts=${before.now}`)).data;
+    const copy = inc.messages.find(m => m.id === sent.data.message_ids?.[0]);
+    check('the console hears about a back-dated read on its next refresh', Boolean(copy?.delivered_at), JSON.stringify({ leased: leased.messages?.length, copy }));
+  }
+
   // Operator messages get an answer: the turn-end hook reminds an agent that read one and stayed silent, once.
   const turn = ev => hook(envA, { session_id: claudeSession, cwd: TMP, hook_event_name: ev });
   await admin('POST', '/send', { from: human, to: `planner-${RUN}`, message: 'let it finish' });

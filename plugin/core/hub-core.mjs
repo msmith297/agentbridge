@@ -124,6 +124,9 @@ const MIGRATIONS = [
   // When mail was last handed out under a lease (e.g. to a background listener's wake-up): the agent
   // saw it then, even if the turn only confirms it at its end.
   'ALTER TABLE messages ADD COLUMN leased_at INTEGER',
+  // When the read state was recorded (delivered_at can be back-dated to the lease): what the console's
+  // incremental refresh looks for.
+  'ALTER TABLE messages ADD COLUMN acked_at INTEGER',
 ];
 const PEER_KEY = 'coalesce(p.session_id, p.id)';
 const BACKFILL = [
@@ -1080,8 +1083,8 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
     if (!ids.length) return { acked: 0 };
     // Mail handed out under a still-running lease was seen when it was handed out: count that as its
     // delivery, so replies the agent sent before confirming it (at its turn's end) answer it.
-    db.run(`UPDATE messages SET delivered_at = CASE WHEN leased_at IS NOT NULL AND leased_until >= ? THEN leased_at ELSE ? END
-      WHERE to_name = ? COLLATE NOCASE AND delivered_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`, now(), now(), name, ...ids);
+    db.run(`UPDATE messages SET delivered_at = CASE WHEN leased_at IS NOT NULL AND leased_until >= ? THEN leased_at ELSE ? END, acked_at = ?
+      WHERE to_name = ? COLLATE NOCASE AND delivered_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`, now(), now(), now(), name, ...ids);
     return { acked: ids.length };
   }
 
@@ -1350,7 +1353,7 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
       const cols = 'id, from_name AS "from", to_name AS "to", body, reply_to, created_at, delivered_at, attachments, chat_id, send_id, from_device, from_key, to_key, project';
       const messages = sinceId
         ? db.all(`SELECT ${cols} FROM messages WHERE id > ? ORDER BY id DESC LIMIT ?`, sinceId, limit)
-          .concat(db.all(`SELECT ${cols} FROM messages WHERE delivered_at > ? AND id <= ?`, sinceTs, sinceId))
+          .concat(db.all(`SELECT ${cols} FROM messages WHERE coalesce(acked_at, delivered_at) > ? AND id <= ?`, sinceTs, sinceId))
         : db.all(`SELECT ${cols} FROM messages ORDER BY id DESC LIMIT ?`, limit);
       return {
         now: now(),
