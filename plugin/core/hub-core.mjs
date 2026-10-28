@@ -17,6 +17,9 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const ATTACHMENT_CHUNK = 1024 * 1024;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const MAX_WAIT_S = 300;
+// Durable Object SQL rejects a statement with more than 100 bound parameters ("too many SQL variables"):
+// IN (...) lists built from message ids or names go in chunks of this size.
+const IN_CHUNK = 80;
 export const LISTEN_ALWAYS = 9e15;   // listen_until meaning "no end time"
 
 const SCHEMA = [
@@ -176,6 +179,16 @@ class HttpError extends Error {
 async function sha256(text) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Runs fn(chunk, placeholders) over list in IN_CHUNK-sized pieces.
+function inChunks(list, fn) {
+  const out = [];
+  for (let i = 0; i < list.length; i += IN_CHUNK) {
+    const chunk = list.slice(i, i + IN_CHUNK);
+    out.push(fn(chunk, chunk.map(() => '?').join(',')));
+  }
+  return out;
 }
 
 function randomToken() {
@@ -608,7 +621,7 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
   function pushToNames(names, data, opts, conv = null) {
     const lower = [...new Set(names.map(n => n.toLowerCase()))].filter(n => !isViewing(n, conv));
     if (!lower.length) return Promise.resolve([]);
-    return pushTo(`lower(name) IN (${lower.map(() => '?').join(',')})`, lower, data, opts);
+    return Promise.all(inChunks(lower, (chunk, qs) => pushTo(`lower(name) IN (${qs})`, chunk, data, opts))).then(r => r.flat());
   }
 
   // ---- remote approvals ----
@@ -1027,8 +1040,8 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
       WHERE to_name = ? COLLATE NOCASE AND delivered_at IS NULL AND (leased_until IS NULL OR leased_until < ?)
       ORDER BY id LIMIT 100`, name, now()).map(withAttachments).map(m => ({ ...m, from_machine: deviceLabel(m.from_device) }));
     if (msgs.length) {
-      db.run(`UPDATE messages SET leased_until = ?, leased_at = ? WHERE id IN (${msgs.map(() => '?').join(',')})`,
-        now() + leaseMs, now(), ...msgs.map(m => m.id));
+      inChunks(msgs.map(m => m.id), (ids, qs) =>
+        db.run(`UPDATE messages SET leased_until = ?, leased_at = ? WHERE id IN (${qs})`, now() + leaseMs, now(), ...ids));
     }
     return msgs;
   }
@@ -1091,8 +1104,9 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
     if (!ids.length) return { acked: 0 };
     // Mail handed out under a still-running lease was seen when it was handed out: count that as its
     // delivery, so replies the agent sent before confirming it (at its turn's end) answer it.
-    db.run(`UPDATE messages SET delivered_at = CASE WHEN leased_at IS NOT NULL AND leased_until >= ? THEN leased_at ELSE ? END, acked_at = ?
-      WHERE to_name = ? COLLATE NOCASE AND delivered_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`, now(), now(), now(), name, ...ids);
+    inChunks(ids, (chunk, qs) =>
+      db.run(`UPDATE messages SET delivered_at = CASE WHEN leased_at IS NOT NULL AND leased_until >= ? THEN leased_at ELSE ? END, acked_at = ?
+        WHERE to_name = ? COLLATE NOCASE AND delivered_at IS NULL AND id IN (${qs})`, now(), now(), now(), name, ...chunk));
     return { acked: ids.length };
   }
 

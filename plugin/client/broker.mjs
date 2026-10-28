@@ -35,10 +35,17 @@ const ADMIN_TOKEN = fs.readFileSync(tokenFile, 'utf8').trim();
 // Several sessions may auto-start a broker at once; wait on the lock and let the port decide.
 const sqlite = new DatabaseSync(path.join(HOME, 'local-hub.db'), { timeout: 5000 });
 sqlite.exec('PRAGMA journal_mode = WAL');
+// Same cap as Durable Object SQL (100 bound parameters per statement), so local tests catch queries
+// that would fail on the hosted hub.
+const MAX_SQL_PARAMS = 100;
+const prepare = (sql, args) => {
+  if (args.length > MAX_SQL_PARAMS) throw new Error(`too many SQL variables (${args.length} > ${MAX_SQL_PARAMS})`);
+  return sqlite.prepare(sql);
+};
 const db = {
-  all: (sql, ...args) => sqlite.prepare(sql).all(...args),
-  get: (sql, ...args) => sqlite.prepare(sql).get(...args),
-  run: (sql, ...args) => sqlite.prepare(sql).run(...args),
+  all: (sql, ...args) => prepare(sql, args).all(...args),
+  get: (sql, ...args) => prepare(sql, args).get(...args),
+  run: (sql, ...args) => prepare(sql, args).run(...args),
 };
 // Push notifications for the console: a VAPID key pair kept in the broker's home.
 const VAPID_FILE = path.join(HOME, 'vapid.json');

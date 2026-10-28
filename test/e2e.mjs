@@ -202,6 +202,16 @@ try {
   check('send reports recipient not listening', sent.includes('Not listening'), sent);
   check('message is acked (not re-delivered)', (await B.call('check_inbox')).includes('No new messages'));
 
+  // A backlog over the hosted hub's 100-parameter SQL cap (the local broker enforces it too) is still readable.
+  for (let i = 0; i < 125; i += 25) {
+    await Promise.all(Array.from({ length: 25 }, (_, j) => admin('POST', '/send', { from: `martin-${RUN}`, to: `bob-${RUN}`, message: `backlog ${i + j}` })));
+  }
+  const backlog1 = await B.call('check_inbox');
+  const backlog2 = await B.call('check_inbox');
+  const backlogSeen = new Set([...(backlog1 + backlog2).matchAll(/backlog (\d+)/g)].map(m => m[1]));
+  check('an inbox with 100+ unread messages can be read in full', backlogSeen.size === 125, backlog1.slice(0, 300) + backlog2.slice(0, 300));
+  check('a big backlog is acked (not re-delivered)', (await B.call('check_inbox')).includes('No new messages'));
+
   // Attachments: agent -> agent (saved locally on delivery), console -> agent (via hook), console download.
   const pic = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(300_000, 3)]);
   const picPath = path.join(TMP, 'screen shot.png');
