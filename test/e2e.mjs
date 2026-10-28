@@ -161,6 +161,12 @@ try {
   const D0 = await agent({ env: { ...defaultEnv, AGENT_BRIDGE_LISTEN: undefined }, client: 'claude-code', sessionId: `default-sess-${RUN}`, name: `deflisten-${RUN}` });
   check('new Claude Code sessions listen always by default', (await D0.call('listen', {})).includes('always-listening'));
   await D0.stop();
+  // Agents and the console list the same offline sessions (agents in a short section of their own).
+  const offPeers = await until(async () => { const r = await A.call('list_peers'); return r.includes(`deflisten-${RUN}`) ? r : null; });
+  const offLine = offPeers?.split('\n').find(l => l.startsWith('Offline ('));
+  const offConsole = (await admin('GET', '/state')).data.peers.find(p => p.name === `deflisten-${RUN}`);
+  check('list_peers lists offline sessions apart, as the console does', offLine?.includes(`deflisten-${RUN} (`) && offLine.includes('listening on but not running') &&
+    !offPeers.split('\n').some(l => l.startsWith(`- deflisten-${RUN}`)) && offConsole && !offConsole.online && offConsole.listening, offPeers);
 
   // Stable identities: messages carry sender/recipient keys (sessions), which survive renames.
   await A.call('send_message', { to: `bob-${RUN}`, message: `key check ${RUN}` });

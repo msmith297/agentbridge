@@ -307,7 +307,7 @@ const TOOLS = {
     inputSchema: { type: 'object', properties: {} },
     run: async () => {
       absorb(await withHub(() => api('POST', '/heartbeat', { id: PEER_ID }))); // current name; fails if removed
-      const { peers } = await withHub(() => api('GET', '/peers'));
+      const { peers, offline = [] } = await withHub(() => api('GET', '/peers'));
       const lines = peers.map(p => {
         const state = p.kind === 'human'
           ? (p.online ? 'human operator (console open)' : 'human operator (console closed; messages wait for them)')
@@ -322,7 +322,12 @@ const TOOLS = {
           (p.project ? `, project: ${p.project}` : '') +
           (p.cwd ? `, folder: ${p.cwd}` : '') + (p.summary ? `\n  working on: ${p.summary}` : '');
       });
+      // Offline sessions, briefly (the operator's console lists the same ones, dimmed).
+      const hours = t => Math.max(1, Math.round((Date.now() - t) / 3_600_000));
+      const off = offline.slice(0, 40).map(p => `${p.display_name && p.display_name !== p.name ? `${p.display_name} [address: ${p.name}]` : p.name} (${p.device}, ` +
+        `${p.listening ? 'listening on but not running' : 'not running'}, last seen ${hours(p.last_seen)}h ago)`);
       return `You are ${whoAmI()} on device ${cfg.device} (folder: ${process.cwd()}${myProject ? `, project: ${myProject}` : ''}). Online peers:\n${lines.join('\n') || '(none)'}` +
+        (off.length ? `\n\nOffline (${offline.length}; sessions not running: messages wait for them, and can't be answered until they run again): ${off.join('; ')}${offline.length > off.length ? `; and ${offline.length - off.length} more` : ''}.` : '') +
         '\n\nEvery entry other than "(you)" is a separate session, even one in the same folder or app as you.' +
         await mailNotice();
     },

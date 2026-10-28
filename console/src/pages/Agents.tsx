@@ -22,7 +22,13 @@ function listenerSilent(p: Peer, now: number) {
 function Status({ peer, now }: { peer: Peer; now: number }) {
   const changed = peer.listen_changed_by && peer.listen_changed_at
     ? ` · listening last switched ${peer.listening ? 'on' : 'off'} by ${peer.listen_changed_by}, ${new Date(peer.listen_changed_at).toLocaleString()}` : '';
-  if (!peer.online) return <span className="pill" title={changed.slice(3) || undefined}>offline</span>;
+  if (!peer.online) {
+    // Agents see offline sessions too (list_peers, send results): say what that means here.
+    const gone = `last seen ${ago(peer.last_seen, now)}`;
+    return peer.listening
+      ? <span className="pill" title={`Listening is switched on, but the session isn't running (${gone}): it can't act until it runs again. Messages wait for it, and its app's Bridge Manager is asked to bring it back.${changed}`}>offline · listening on</span>
+      : <span className="pill" title={`The session isn't running (${gone}); messages wait for it.${changed}`}>offline</span>;
+  }
   if (peer.listening && listenerSilent(peer, now)) {
     const mins = Math.round((now - Math.max(peer.polled_at ?? 0, peer.activity?.at ?? 0)) / 60_000);
     return <span className="pill warn" title={`Listening is on, but nothing has checked for its messages for ${mins} min since its turn ended: it won't wake until its next turn. Restarting the session usually fixes it.${changed}`}>listening · no listener</span>;
@@ -34,12 +40,19 @@ function Status({ peer, now }: { peer: Peer; now: number }) {
   return <span className="pill idle" title={`Sees messages only when its user prompts it${changed}`}>online · not listening</span>;
 }
 
+// A checkbox remembered in this browser.
+function useStoredToggle(key: string, initial: boolean): [boolean, (v: boolean) => void] {
+  const [value, setValue] = useState(() => { try { const v = localStorage.getItem(key); return v === null ? initial : v === '1'; } catch { return initial; } });
+  return [value, v => { setValue(v); try { localStorage.setItem(key, v ? '1' : '0'); } catch { /* private mode */ } }];
+}
+
 export function Agents({ state, session, onMessage, onChanged }: Props) {
-  const [showOffline, setShowOffline] = useState(false);
+  const [showOffline, setShowOffline] = useStoredToggle('agent-bridge-show-offline', true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const agents = state.peers.filter(p => p.kind !== 'human' && (showOffline || p.online));
+  // Online first, then offline (shown by default: agents see them too, so the console matches).
+  const agents = state.peers.filter(p => p.kind !== 'human' && (showOffline || p.online)).sort((a, b) => Number(b.online) - Number(a.online));
   const offlineCount = state.peers.filter(p => p.kind !== 'human' && !p.online).length;
   const byDevice = new Map<string, Peer[]>();
   for (const p of agents) byDevice.set(p.device, [...(byDevice.get(p.device) ?? []), p]);

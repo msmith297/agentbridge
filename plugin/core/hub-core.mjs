@@ -1282,7 +1282,13 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
       dropGhosts();
       db.run(`DELETE FROM peers WHERE last_seen < ? AND kind != 'human'`, now() - STALE_MS);
       db.run(`DELETE FROM peers WHERE last_seen < ? AND kind = 'human'`, now() - HUMAN_STALE_MS);
-      return { peers: peerList().map(({ key, ...p }) => p) }; // identities stay in the console
+      // Offline sessions (seen in the last day) too, as the console lists them: the same set on both sides.
+      const all = peerList({ includeOffline: true }).map(({ key, ...p }) => p); // identities stay in the console
+      return {
+        peers: all.filter(p => p.online || p.kind === 'human'),
+        offline: all.filter(p => !p.online && p.kind !== 'human')
+          .map(p => ({ name: p.name, display_name: p.display_name, device: p.device, listening: p.listening, last_seen: p.last_seen })),
+      };
     },
 
     'POST /send': ({ body, auth }) => {
