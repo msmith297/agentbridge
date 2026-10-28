@@ -1,8 +1,8 @@
 import { createPortal } from 'react-dom';
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import {
   ackMessages, attachmentUrl, chatAction, hideConversation, MAX_ATTACHMENT_BYTES, sendMessage,
-  type Attachment, type Chat, type HubState, type Message, type Peer, type Session,
+  type Attachment, type Chat, type HistoryQuery, type HubState, type Message, type Peer, type Session,
 } from '../api';
 import { ago, folderName, stamp } from '../format';
 import { ConfirmButton } from '../components/ConfirmButton';
@@ -21,6 +21,8 @@ interface Props {
   session: Session;
   view: MessagesView;
   onChanged: () => void | Promise<unknown>;
+  // Resolves to whether older messages remain, and the oldest id this page reached.
+  loadHistory: (q: HistoryQuery, before?: number) => Promise<{ more: boolean; oldest?: number }>;
 }
 
 const SYSTEM = 'agent-bridge';
@@ -93,7 +95,7 @@ export function group(messages: Message[], me: string): Entry[] {
 const findPeer = (state: HubState, name: string) =>
   state.peers.find(p => p.name === name && p.online) ?? state.peers.find(p => p.name === name);
 
-export function Messages({ state, session, view, onChanged }: Props) {
+export function Messages({ state, session, view, onChanged, loadHistory }: Props) {
   const me = session.name.toLowerCase();
   const chats = state.chats ?? [];
   const activeChat = view.kind === 'chat' ? chats.find(c => c.id === view.id) ?? null : null;
@@ -144,6 +146,17 @@ export function Messages({ state, session, view, onChanged }: Props) {
 
   // Phones show the conversation list or the open conversation, not both.
   const viewKey = convKey(view);
+  // Opening a conversation loads its own history (the newest messages overall may not include it);
+  // "load older" pages further back. Per conversation: are there older messages, and where the last
+  // page ended (a DM page can hold messages this thread then leaves out, so not just its oldest shown).
+  const [paging, setPaging] = useState<Record<string, { more: boolean; oldest?: number }>>({});
+  const historyQuery: HistoryQuery | null = view.kind === 'chat' ? { chat: view.id } : view.kind === 'dm' ? { dm: view.key } : null;
+  const page = (before?: number) => historyQuery && loadHistory(historyQuery, before).then(p => setPaging(prev => ({ ...prev, [viewKey]: p })));
+  useEffect(() => { page()?.catch(() => {}); }, [viewKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const paged = paging[viewKey];
+  const loadOlder = paged?.more
+    ? () => page(Math.min(paged.oldest ?? Infinity, entries[0]?.first.id ?? Infinity)) ?? Promise.resolve()
+    : undefined;
   const [listOpen, setListOpen] = useState(false);
   const sidebar = useSidebarWidth();
   useEffect(() => setListOpen(false), [viewKey]);
@@ -204,7 +217,7 @@ export function Messages({ state, session, view, onChanged }: Props) {
           ☰ Conversations{totalUnread ? <span className="count alert">{totalUnread}</span> : null}
         </button>
         <ConversationHeader view={view} chat={activeChat} state={state} session={session} onChanged={onChanged} entries={entries} />
-        <Feed entries={entries} state={state} session={session} me={me} view={view} onChanged={onChanged} />
+        <Feed entries={entries} state={state} session={session} me={me} view={view} onChanged={onChanged} onLoadOlder={loadOlder} />
         <TypingRow state={state} me={me} names={view.kind === 'dm' ? [dmAddress(state, view.key)] : view.kind === 'chat' ? activeChat?.members ?? [] : []} />
         <Composer key={viewKey}
           view={view} chat={activeChat} state={state} session={session} me={me} onChanged={onChanged} />
@@ -437,9 +450,10 @@ function ConversationHeader({ view, chat, state, session, onChanged, entries }: 
 
 // Message list shared by conversations and project chats. `all` (for reply previews) and `labels`
 // (machine names) default to the hub state's.
-export function Feed({ entries, state, session, me, view, all, labels, onChanged }: {
+export function Feed({ entries, state, session, me, view, all, labels, onChanged, onLoadOlder }: {
   entries: Entry[]; state: HubState; session: Session; me: string; view: MessagesView; all?: Message[]; labels?: Record<string, string>;
   onChanged?: () => void;
+  onLoadOlder?: () => Promise<unknown>; // set while older messages remain to be loaded
 }) {
   const feedRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -502,6 +516,23 @@ export function Feed({ entries, state, session, me, view, all, labels, onChanged
     const el = feedRef.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [entries.length, sending.length]);
+  // Older messages load above what's on screen (button, or scrolling to the top): keep the view
+  // where it was instead of jumping.
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const anchor = useRef<{ first: number; height: number } | null>(null);
+  const older = () => {
+    const el = feedRef.current;
+    if (!onLoadOlder || loadingOlder || !el) return;
+    anchor.current = { first: entries[0]?.first.id ?? 0, height: el.scrollHeight };
+    setLoadingOlder(true);
+    onLoadOlder().catch(() => {}).finally(() => setLoadingOlder(false));
+  };
+  useLayoutEffect(() => {
+    const el = feedRef.current, a = anchor.current;
+    if (!el || !a || (entries[0]?.first.id ?? 0) === a.first) return;
+    el.scrollTop += el.scrollHeight - a.height;
+    anchor.current = null;
+  }, [entries]);
   // Stay pinned to the bottom while content grows (images loading, receipts, typing row), so the
   // view never jumps when you're reading the latest messages.
   useEffect(() => {
@@ -515,7 +546,14 @@ export function Feed({ entries, state, session, me, view, all, labels, onChanged
 
   return (
     <div className="feed card" ref={feedRef}
-      onScroll={e => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
+      onScroll={e => {
+        const el = e.currentTarget;
+        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        if (el.scrollTop < 40 && el.scrollHeight > el.clientHeight) older();
+      }}>
+      {onLoadOlder ? (
+        <button className="link small load-older" onClick={older} disabled={loadingOlder}>{loadingOlder ? 'Loading…' : 'Load older messages'}</button>
+      ) : null}
       {entries.length === 0 && !sending.length ? <p className="muted empty">No messages yet.</p> : [...entries.map(({ key, first: m, to, seen }, i) => {
         const toMe = to.some(n => n.toLowerCase() === me);
         const fromMe = m.from.toLowerCase() === me;

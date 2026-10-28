@@ -127,6 +127,7 @@ export interface Pairing {
 export interface HubState {
   now: number;
   incremental?: boolean; // messages holds only changes since the last poll
+  dm_heads?: Message[];  // full loads: the newest message of each direct conversation older than `messages`
   peers: Peer[];
   messages: Message[];
   devices: Device[];
@@ -234,6 +235,31 @@ export function mergeState(prev: HubState | null, next: HubState): HubState {
   for (const m of next.messages) byId.set(m.id, m);
   return { ...next, messages: [...byId.values()].sort((a, b) => b.id - a.id).slice(0, 1000) };
 }
+
+// History loaded per conversation (below) stays across polls, full reloads included: /state carries
+// only the newest messages overall, so a busy conversation pushes the others' history out of it.
+// `updates` (this poll's messages) refresh the kept copies' read receipts.
+export function keepHistory(state: HubState, history: Map<number, Message>, updates: Message[] = [], full = false): HubState {
+  if (!history.size) return state;
+  for (const m of updates) if (history.has(m.id)) history.set(m.id, m);
+  const byId = new Map(state.messages.map(m => [m.id, m]));
+  // A full reload has every message from its oldest one up: a kept one missing there was deleted.
+  const floor = full && state.messages.length ? state.messages[state.messages.length - 1].id : Infinity;
+  for (const [id, m] of history) {
+    if (byId.has(id)) continue;
+    if (id >= floor) history.delete(id);
+    else byId.set(id, m);
+  }
+  return { ...state, messages: [...byId.values()].sort((a, b) => b.id - a.id) };
+}
+
+// One conversation's messages older than `before` (newest first, whole sends); more: older ones remain.
+export type HistoryQuery = { chat: number } | { dm: string } | { project: string };
+export interface HistoryPage { messages: Message[]; more: boolean }
+export const fetchHistory = (s: Session, q: HistoryQuery, before?: number) => {
+  const [k, v] = Object.entries(q)[0];
+  return adminCall<HistoryPage>(s, 'GET', `/messages?${k}=${encodeURIComponent(String(v))}&as=${encodeURIComponent(s.name)}&limit=100${before && Number.isFinite(before) ? `&before=${before}` : ''}`);
+};
 
 export interface Outgoing {
   to?: string[];      // one or more names, or ['*']

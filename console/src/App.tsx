@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AuthError, clearSession, fetchState, getOperator, mergeState, saveSession, setOperator, type HubState, type Session } from './api';
+import {
+  AuthError, clearSession, fetchHistory, fetchState, getOperator, keepHistory, mergeState, saveSession, setOperator,
+  type HistoryQuery, type HubState, type Message, type Session,
+} from './api';
 import { Login } from './pages/Login';
 import { Approvals } from './components/Approvals';
 import { Notifications } from './components/Notifications';
@@ -100,14 +103,16 @@ export function App({ initialSession }: { initialSession: Session | null }) {
 
   // Poll cheaply: after the first load, ask only for changes since the last poll.
   const cursor = useRef<{ id: number; ts: number; polls: number } | null>(null);
+  const history = useRef(new Map<number, Message>());
   const refresh = useCallback(async () => {
     if (!session) return;
     try {
       const c = cursor.current;
       const full = !c || c.polls >= FULL_REFRESH_EVERY;
       const next = await fetchState(session, full ? undefined : { id: c.id, ts: c.ts });
+      for (const m of next.dm_heads ?? []) history.current.set(m.id, m); // so every DM thread stays listed
       setState(prev => {
-        const merged = mergeState(full ? null : prev, next);
+        const merged = keepHistory(mergeState(full ? null : prev, next), history.current, next.messages, full);
         cursor.current = { id: merged.messages[0]?.id ?? 0, ts: next.now, polls: full ? 0 : (c?.polls ?? 0) + 1 };
         return merged;
       });
@@ -118,9 +123,19 @@ export function App({ initialSession }: { initialSession: Session | null }) {
     }
   }, [session, signOut]);
 
+  // A conversation's older messages: kept across polls (keepHistory), merged in as they arrive.
+  const loadHistory = useCallback(async (q: HistoryQuery, before?: number) => {
+    if (!session) return { more: false };
+    const page = await fetchHistory(session, q, before);
+    for (const m of page.messages) history.current.set(m.id, m);
+    setState(prev => prev && keepHistory(prev, history.current));
+    return { more: page.more, oldest: page.messages[page.messages.length - 1]?.id };
+  }, [session]);
+
   useEffect(() => {
     if (!session) return;
     cursor.current = null;
+    history.current.clear();
     refresh();
     // Don't poll while the tab is hidden; catch up as soon as it's visible again.
     const timer = setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
@@ -184,7 +199,7 @@ export function App({ initialSession }: { initialSession: Session | null }) {
         ) : route === 'projects' ? (
           <Projects state={state} session={session} slug={loc.slug} tab={loc.tab} onChanged={refresh} />
         ) : route === 'messages' ? (
-          <Messages state={state} session={session} view={loc.messages} onChanged={refresh} />
+          <Messages state={state} session={session} view={loc.messages} onChanged={refresh} loadHistory={loadHistory} />
         ) : route === 'accounts' ? (
           <Accounts state={state} session={session} onChanged={refresh} />
         ) : (

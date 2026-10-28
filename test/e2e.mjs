@@ -211,6 +211,15 @@ try {
   const backlogSeen = new Set([...(backlog1 + backlog2).matchAll(/backlog (\d+)/g)].map(m => m[1]));
   check('an inbox with 100+ unread messages can be read in full', backlogSeen.size === 125, backlog1.slice(0, 300) + backlog2.slice(0, 300));
   check('a big backlog is acked (not re-delivered)', (await B.call('check_inbox')).includes('No new messages'));
+  // The console pages one conversation's history, beyond the newest messages /state carries.
+  const bobKey = (await admin('GET', '/state')).data.peers.find(p => p.name === `bob-${RUN}`)?.key;
+  const page1 = await admin('GET', `/messages?dm=${encodeURIComponent(bobKey)}&as=martin-${RUN}&limit=100`);
+  const page2 = await admin('GET', `/messages?dm=${encodeURIComponent(bobKey)}&as=martin-${RUN}&limit=100&before=${page1.data.messages?.at(-1)?.id}`);
+  const paged = [...(page1.data.messages ?? []), ...(page2.data.messages ?? [])].map(m => m.body);
+  check('conversation history pages back from the newest (DM)', page1.data.messages?.length === 100 && page1.data.more === true &&
+    paged.filter(b => b.startsWith('backlog ')).length === 125 && new Set(paged).size === paged.length,
+    JSON.stringify({ n1: page1.data.messages?.length, more: page1.data.more, n2: page2.data.messages?.length, first: paged[0] }));
+  check('history needs a conversation', (await admin('GET', '/messages')).status === 400);
 
   // Attachments: agent -> agent (saved locally on delivery), console -> agent (via hook), console download.
   const pic = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(300_000, 3)]);
@@ -569,6 +578,13 @@ try {
     const inc = (await admin('GET', `/state?as=${human}&since_id=${Math.max(...before.messages.map(m => m.id))}&since_ts=${before.now}`)).data;
     const copy = inc.messages.find(m => m.id === sent.data.message_ids?.[0]);
     check('the console hears about a back-dated read on its next refresh', Boolean(copy?.delivered_at), JSON.stringify({ leased: leased.messages?.length, copy }));
+    // A DM thread whose messages are all older than the newest `limit` still gets listed.
+    await admin('POST', '/send', { from: human, to: [`planner-${RUN}`], message: 'newer, elsewhere' });
+    const narrow = (await admin('GET', `/state?as=${human}&limit=1`)).data;
+    check('the console lists DM threads older than its message window', narrow.messages.length === 1 &&
+      narrow.dm_heads?.some(m => m.id === sent.data.message_ids?.[0]) && !narrow.dm_heads.some(m => m.to === `planner-${RUN}`),
+      JSON.stringify(narrow.dm_heads?.map(m => [m.id, m.from, m.to])));
+    await A2.call('check_inbox');
   }
 
   // Operator messages get an answer: the turn-end hook reminds an agent that read one and stayed silent, once.
@@ -655,6 +671,10 @@ try {
   const chatState = await admin('GET', '/state');
   check('console sees chat and its messages', chatState.data.chats?.some(c => c.id === chat.id) &&
     chatState.data.messages.filter(m => m.chat_id === chat.id && m.body === 'chat hello').length === 2, JSON.stringify(chatState.data.chats));
+  const chatPage = await admin('GET', `/messages?chat=${chat.id}&limit=1`);
+  check('chat history pages by send, with every member\'s copy', chatPage.data.messages?.length === 2 &&
+    chatPage.data.messages.every(m => m.chat_id === chat.id && m.body === 'old-client style reply') && chatPage.data.more === true,
+    JSON.stringify(chatPage.data));
   const mention = await admin('POST', '/send', { from: human, chat: chat.id, to: [`bob-${RUN}`], message: `@bob-${RUN} just you` });
   check('a mention in a chat reaches every member', mention.status === 200 &&
     [`bob-${RUN}`, `planner-${RUN}`].every(n => mention.data.delivered_to.includes(n)) && mention.data.chat?.id === chat.id, JSON.stringify(mention.data));

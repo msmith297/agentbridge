@@ -1387,9 +1387,16 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
         ? db.all(`SELECT ${cols} FROM messages WHERE id > ? ORDER BY id DESC LIMIT ?`, sinceId, limit)
           .concat(db.all(`SELECT ${cols} FROM messages WHERE coalesce(acked_at, delivered_at) > ? AND id <= ?`, sinceTs, sinceId))
         : db.all(`SELECT ${cols} FROM messages ORDER BY id DESC LIMIT ?`, limit);
+      // Each of the operator's direct conversations, by its newest message: the console lists them
+      // even when busier conversations fill the newest `limit` messages (it loads the rest on opening).
+      const dmHeads = human && !sinceId ? db.all(`SELECT ${cols} FROM messages WHERE id IN (
+          SELECT max(id) FROM messages WHERE chat_id IS NULL AND project IS NULL AND (from_name = ? COLLATE NOCASE OR to_name = ? COLLATE NOCASE)
+          GROUP BY CASE WHEN from_name = ? COLLATE NOCASE THEN coalesce(to_key, lower(to_name)) ELSE coalesce(from_key, lower(from_name)) END)
+        AND id < ?`, human.name, human.name, human.name, messages.at(-1)?.id ?? 0).map(withAttachments) : [];
       return {
         now: now(),
         incremental: Boolean(sinceId),
+        dm_heads: dmHeads,
         peers: peerList({ includeOffline: true }),
         messages: messages.map(withAttachments),
         devices: db.all('SELECT name, label, created_at, last_used, revoked_at FROM devices ORDER BY name')
@@ -1407,6 +1414,38 @@ export function createHub(db, { adminToken, maxAutoRounds = 20, adminOnAgentApi 
         hidden: me ? Object.fromEntries(db.all('SELECT conv, before_id FROM hidden_conversations WHERE owner = ?', me)
           .map(h => [h.conv, h.before_id])) : {},
       };
+    },
+
+    // One conversation's history, older than `before` (the console's /state carries only the newest
+    // messages overall, so a busy chat can push the others' history out of it). Pages by send: a
+    // message to a chat is stored once per member, and a page has all of each send's copies.
+    // dm is the other side's key (or "name:<name>"), as the console names DM threads; `as` is the operator.
+    'GET /messages': ({ url }) => {
+      const p = k => url.searchParams.get(k);
+      const before = Number(p('before')) || Number.MAX_SAFE_INTEGER;
+      const limit = Math.min(Math.max(Number(p('limit')) || 100, 1), 500);
+      let where, args;
+      if (p('chat')) [where, args] = ['chat_id = ?', [Number(p('chat'))]];
+      else if (p('project')) [where, args] = ['project = ?', [projectSlug(p('project'))]];
+      else if (p('dm')) {
+        const me = String(p('as') || '').trim();
+        if (!me) throw new HttpError(400, 'as (the operator) required with dm');
+        const key = p('dm');
+        // Older messages carry no keys: match the agent's name too (the console sorts out the rest).
+        const name = key.startsWith('name:') ? key.slice(5) : db.get(`SELECT name FROM peers p WHERE ${PEER_KEY} = ?`, key)?.name ?? null;
+        where = `chat_id IS NULL AND project IS NULL AND (
+          (from_name = ? COLLATE NOCASE AND (to_key = ? OR to_name = ? COLLATE NOCASE))
+          OR (to_name = ? COLLATE NOCASE AND (from_key = ? OR from_name = ? COLLATE NOCASE)))`;
+        args = [me, key, name, me, key, name];
+      } else throw new HttpError(400, 'chat, dm or project required');
+      const cols = 'id, from_name AS "from", to_name AS "to", body, reply_to, created_at, delivered_at, attachments, chat_id, send_id, from_device, from_key, to_key, project';
+      const send = `coalesce(send_id, 'm' || id)`;
+      const messages = db.all(`SELECT ${cols} FROM messages WHERE ${where} AND ${send} IN (
+          SELECT ${send} FROM messages WHERE ${where} AND id < ? GROUP BY ${send} ORDER BY min(id) DESC LIMIT ?)
+        ORDER BY id DESC`, ...args, ...args, before, limit);
+      const oldest = messages.length ? messages[messages.length - 1].id : before;
+      const more = Boolean(db.get(`SELECT 1 AS x FROM messages WHERE ${where} AND id < ? LIMIT 1`, ...args, oldest));
+      return { messages: messages.map(withAttachments), more };
     },
 
     // The operator name for this sign-in: the one bound to its Access login (or the default for

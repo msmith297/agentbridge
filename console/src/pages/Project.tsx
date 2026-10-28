@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ConfirmButton } from '../components/ConfirmButton';
-import { ackMessages, deleteProject, projectOverview, setProjectMember, type HubState, type ProjectOverview, type Session } from '../api';
+import { ackMessages, deleteProject, fetchHistory, projectOverview, setProjectMember, type HubState, type Message, type ProjectOverview, type Session } from '../api';
 import { Composer, Feed, group } from './Messages';
 import { displayName, Identity, MemberStack, PeerPicker, TypingRow, useCloseOnOutsideClick } from '../components/Identity';
 import { Overview } from './project/Overview';
@@ -44,7 +44,22 @@ export function Project({ state, session, slug, tab, onChanged }: {
     return () => clearInterval(t);
   }, [refresh, tab]);
 
-  const entries = useMemo(() => group(ov?.messages ?? [], me), [ov, me]);
+  // The overview carries the newest 200 messages; "load older" pages further back (kept across refreshes).
+  const [older, setOlder] = useState<Message[]>([]);
+  const [more, setMore] = useState<boolean | null>(null);
+  useEffect(() => { setOlder([]); setMore(null); }, [slug]);
+  const messages = useMemo(() => {
+    const byId = new Map(older.map(m => [m.id, m]));
+    for (const m of ov?.messages ?? []) byId.set(m.id, m);
+    return [...byId.values()].sort((a, b) => b.id - a.id);
+  }, [ov, older]);
+  const entries = useMemo(() => group(messages, me), [messages, me]);
+  const loadOlder = (more ?? (ov?.messages.length ?? 0) >= 200)
+    ? () => fetchHistory(session, { project: slug }, entries[0]?.first.id).then(page => {
+      setOlder(prev => [...prev, ...page.messages]);
+      setMore(page.more);
+    })
+    : undefined;
 
   // Reading the project chat marks the operator's messages in it as read.
   const unread = entries.flatMap(e => e.unread);
@@ -124,7 +139,7 @@ export function Project({ state, session, slug, tab, onChanged }: {
 
       {tab === 'chat' ? (
         <div className="project-chat">
-          <Feed entries={entries} state={state} session={session} me={me} view={view} all={ov.messages} labels={ov.device_labels} />
+          <Feed entries={entries} state={state} session={session} me={me} view={view} all={messages} labels={ov.device_labels} onLoadOlder={loadOlder} />
           <TypingRow state={state} me={me} names={ov.members.map(m => m.name)} />
           <Composer view={view} chat={null} state={state} session={session} me={me} onChanged={() => { refresh(); onChanged(); }} />
         </div>
