@@ -8,7 +8,8 @@
 //   node install.mjs --local            # no hub: agents on this computer use a local broker
 //   node install.mjs --status
 //   node install.mjs --uninstall [--purge]
-// Options: --no-claude, --no-codex, --codex-legacy (Codex via [mcp_servers] + hooks.json instead of the plugin)
+//   node install.mjs --antigravity      # Google Antigravity only (leaves Claude Code and Codex alone)
+// Options: --no-claude, --no-codex, --no-antigravity, --codex-legacy (Codex via [mcp_servers] + hooks.json instead of the plugin)
 //
 // What it changes (with a backup of each file it edits):
 //   ~/.agent-bridge/app/          runtime copy of client/, core/, console/dist (stable path for configs)
@@ -20,6 +21,7 @@
 //                                 that serves each chat: Codex Desktop doesn't run hooks.json)
 //   ~/.codex/config.toml          that marketplace + plugin enabled, features.plugin_hooks (managed block)
 //   ~/.codex/hooks.json           agent-bridge entries removed (only with --codex-legacy: three hooks)
+//   ~/.gemini/config/plugins/agent-bridge/  an Antigravity plugin: its MCP server, hooks and rules
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,6 +39,8 @@ const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 const CODEX_TOML = path.join(CODEX_HOME, 'config.toml');
 const CODEX_HOOKS = path.join(CODEX_HOME, 'hooks.json');
 const CODEX_MARKET = path.join(HOME, 'codex-marketplace');
+const GEMINI_CONFIG = path.join(os.homedir(), '.gemini', 'config');
+const AGY_PLUGIN = path.join(GEMINI_CONFIG, 'plugins', 'agent-bridge');
 const SERVER = 'agent-bridge';
 const LEGACY = ['claude-bridge'];
 const MARK_BEGIN = '# >>> agent-bridge (managed by agent-bridge/install.mjs; edits inside are overwritten) >>>';
@@ -69,6 +73,7 @@ const NODE = fwd(process.execPath);
 const MCP_SCRIPT = fwd(path.join(APP, 'client', 'mcp.mjs'));
 const HOOK_SCRIPT = fwd(path.join(APP, 'client', 'hook.mjs'));
 const HOOK_COMMAND = `"${NODE}" "${HOOK_SCRIPT}"`;
+const AGY_MCP_SCRIPT = fwd(path.join(APP, 'client', 'antigravity-mcp.mjs'));
 const slug = s => String(s).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
 
 // ---------- file helpers ----------
@@ -234,6 +239,49 @@ function writeCodexPlugin() {
   } } });
 }
 
+function antigravityPresent() {
+  return fs.existsSync(GEMINI_CONFIG) || fs.existsSync('/Applications/Antigravity.app');
+}
+
+// Antigravity gets agent-bridge as a native plugin in its global plugins folder, which it loads by
+// itself: one MCP server for all conversations (antigravity-mcp.mjs gives each its own session),
+// the hooks (hook.mjs --antigravity) and always-on rules. All generated: no backups.
+function configureAntigravity(remove = false) {
+  fs.rmSync(AGY_PLUGIN, { recursive: true, force: true });
+  if (remove) return ok(`removed the Antigravity plugin (${AGY_PLUGIN})`);
+  const write = (file, data) => {
+    fs.mkdirSync(path.dirname(path.join(AGY_PLUGIN, file)), { recursive: true });
+    fs.writeFileSync(path.join(AGY_PLUGIN, file), typeof data === 'string' ? data : JSON.stringify(data, null, 2) + '\n');
+  };
+  const hook = timeout => ({ type: 'command', command: `${HOOK_COMMAND} --antigravity`, timeout });
+  write('plugin.json', {
+    name: SERVER,
+    displayName: 'agent-bridge',
+    description: 'Lets this conversation message other AI agents (Claude Code, Codex, other conversations) and your operator console, stay listening for work, and share projects, through your agent-bridge hub.',
+    version: '0.2.0',
+    logo: 'assets/logo.svg',
+    homepage: 'https://github.com/msmith297/agentbridge',
+    suggestedPrompts: ['List peers on agent-bridge', 'Check my agent-bridge inbox', 'Join an agent-bridge project'],
+  });
+  write('mcp_config.json', { mcpServers: { [SERVER]: { command: NODE, args: [AGY_MCP_SCRIPT] } } });
+  // In the app, Stop ends the turn and a background listener wakes the conversation; in the agy CLI it
+  // holds the turn while listening (up to the 30-minute keepalive), hence its long timeout.
+  write('hooks.json', { [SERVER]: {
+    SessionStart: [hook(30)],
+    PreInvocation: [hook(30)],
+    PostToolUse: [{ matcher: '*', hooks: [hook(15)] }],
+    Stop: [hook(1900)],
+  } });
+  write('rules/AGENTS.md', fs.readFileSync(path.join(REPO, 'plugin', 'antigravity', 'AGENTS.md'), 'utf8'));
+  write('assets/logo.svg', fs.readFileSync(path.join(REPO, 'console', 'public', 'icon.svg'), 'utf8'));
+  ok(`installed the Antigravity plugin in ${AGY_PLUGIN}`);
+  const agy = [path.join(os.homedir(), '.local', 'bin', 'agy'), 'agy'].find(p => spawnSync(p, ['--help'], { stdio: 'ignore' }).status === 0);
+  if (!agy) return;
+  const check = spawnSync(agy, ['plugin', 'validate', AGY_PLUGIN], { encoding: 'utf8' });
+  if (check.status === 0) ok('Antigravity validated the plugin');
+  else warn(`Antigravity's plugin check failed:\n${String(check.stdout || '') + String(check.stderr || '')}`);
+}
+
 // The Codex CLI (it comes with the ChatGPT app): registering a marketplace doesn't install the plugin;
 // `codex plugin add` does (and remove + add refreshes Codex's cached copy after an update).
 function findCodexCli() {
@@ -382,6 +430,7 @@ function status() {
   info(`runtime: ${fs.existsSync(MCP_SCRIPT) ? APP : 'not installed'}`);
   info(`Claude Code MCP: ${readJson(CLAUDE_JSON, {}).mcpServers?.[SERVER] ? 'registered' : 'not registered'}`);
   info(`Claude Code hooks: ${JSON.stringify(readJson(CLAUDE_SETTINGS, {}).hooks || {}).includes('agent-bridge') ? 'installed' : 'not installed'}`);
+  if (antigravityPresent()) info(`Antigravity plugin: ${fs.existsSync(path.join(AGY_PLUGIN, 'plugin.json')) ? 'installed' : 'not installed'}`);
   if (codexPresent()) {
     info(`Codex MCP: ${fs.existsSync(CODEX_TOML) && fs.readFileSync(CODEX_TOML, 'utf8').includes(MARK_BEGIN) ? 'registered' : 'not registered'}`);
     info(`Codex hooks: ${JSON.stringify(readJson(CODEX_HOOKS, {}).hooks || {}).includes('agent-bridge') ? 'installed' : 'not installed'}`);
@@ -437,10 +486,13 @@ async function install() {
   fs.writeFileSync(configFile, JSON.stringify({ url, token: token || undefined, device, mode: local ? 'local' : undefined }, null, 2) + '\n', { mode: 0o600 });
   ok(`config written to ${configFile}`);
 
-  const doClaude = !flag('no-claude') && claudePresent();
-  const doCodex = !flag('no-codex') && codexPresent();
-  if (doClaude) configureClaude(); else info('Claude Code not found (or --no-claude); skipped');
-  if (doCodex) configureCodex(); else info('Codex not found (or --no-codex); skipped');
+  const onlyAgy = flag('antigravity');
+  const doClaude = !onlyAgy && !flag('no-claude') && claudePresent();
+  const doCodex = !onlyAgy && !flag('no-codex') && codexPresent();
+  const doAgy = !flag('no-antigravity') && (onlyAgy || antigravityPresent());
+  if (doClaude) configureClaude(); else info('Claude Code not found (or --no-claude / --antigravity); skipped');
+  if (doCodex) configureCodex(); else info('Codex not found (or --no-codex / --antigravity); skipped');
+  if (doAgy) configureAntigravity(); else info('Antigravity not found (or --no-antigravity); skipped');
 
   console.log('\nDone. Next:');
   if (doClaude) console.log('  • Claude Code: start new sessions (or restart the Claude app). Existing sessions keep their old setup.');
@@ -449,15 +501,18 @@ async function install() {
       ? '  • Codex: start a new session and run /hooks once to review and trust the three agent-bridge hooks (needed for listening).'
       : '  • Codex: restart the ChatGPT/Codex app, then approve the agent-bridge plugin\'s hooks once when Codex asks (or with /hooks).');
   }
+  if (doAgy) console.log('  • Antigravity: start a new conversation (the plugin loads by itself) and allow the agent-bridge tools when it asks.');
   console.log('  • Try it: ask an agent to "list peers on agent-bridge".');
   console.log('  • Per-project defaults: put {"name": "planner", "listen": "always"} in <project>/.agent-bridge.json\n');
 }
 
 function uninstall() {
   console.log('\nRemoving agent-bridge\n');
-  if (!flag('no-claude') && claudePresent()) configureClaude(true);
-  if (!flag('no-codex') && codexPresent()) configureCodex(true);
-  if (flag('no-claude') || flag('no-codex')) {
+  const onlyAgy = flag('antigravity');
+  if (!onlyAgy && !flag('no-claude') && claudePresent()) configureClaude(true);
+  if (!onlyAgy && !flag('no-codex') && codexPresent()) configureCodex(true);
+  if (!flag('no-antigravity') && fs.existsSync(AGY_PLUGIN)) configureAntigravity(true);
+  if (onlyAgy || flag('no-claude') || flag('no-codex') || flag('no-antigravity')) {
     info(`kept ${APP} (still used by the agent you didn't uninstall)`);
   } else {
     fs.rmSync(APP, { recursive: true, force: true });

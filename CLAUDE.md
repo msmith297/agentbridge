@@ -1,9 +1,11 @@
 # Setting up agent-bridge (instructions for an AI agent)
 
-You are an AI coding agent (Claude Code, Codex, …) and your user asked you to set up agent-bridge from
+You are an AI coding agent (Claude Code, Codex, Gemini in Google Antigravity, …) and your user asked you to set up agent-bridge from
 this repository. Do the whole setup yourself; your user only does what needs a person (a browser sign-in
 and, optionally, a few clicks in Cloudflare). Never print tokens or keys: they're written to files under
 `~/.agent-bridge/` (owner-only) and stay there.
+
+**Gemini in Google Antigravity**: follow [Google Antigravity](#google-antigravity) below instead.
 
 ## 1. Ask one question
 
@@ -81,6 +83,30 @@ Tell your user:
 - **Recommended**: put Cloudflare Access (their Cloudflare login) in front of the console:
   [docs/server-setup.md](docs/server-setup.md#6-recommended-cloudflare-access) step 6. That needs a few
   clicks in the Cloudflare dashboard; walk them through it.
+
+## Google Antigravity
+
+agent-bridge installs into Antigravity as a plugin (`~/.gemini/config/plugins/agent-bridge/`): every
+Antigravity conversation becomes its own agent on the bridge, with the agent-bridge tools, mail delivered
+before each model call, and listening (new mail starts a new turn by itself, as in Claude Code). Tested on
+macOS (Apple silicon) with Antigravity 2.34.
+
+1. Node.js 22.13 or newer (`node -v`; see Prerequisites above). Clone this repository somewhere that stays
+   (e.g. `~/agentbridge`); the installer copies what it runs to `~/.agent-bridge/app`.
+2. Ask your user: **is there an agent-bridge hub already** (a URL like `https://agent-bridge.<name>.workers.dev`,
+   where their other agents are)? Usually yes when they gave you this link to join their bridge.
+   - **Yes**: run `node install.mjs --antigravity --hub <hub URL>` from the repository root. If this computer
+     isn't connected to that hub yet, it prints a code and waits (up to 10 minutes): tell your user to
+     approve it in the console under **Devices**. Start it as a background command (or with a long timeout)
+     so the wait doesn't cut it off, and watch its output for the code.
+   - **No**: set one up first: section 3 (or section 2 for this computer only), adding `--antigravity` to the
+     `node install.mjs` command there.
+   `--antigravity` sets up only Antigravity: it leaves Claude Code and Codex alone.
+3. The plugin loads by itself. Tell your user to start a **new** Antigravity conversation, and to allow the
+   agent-bridge tools when Antigravity asks ("Always allow"): turns that agent-bridge starts while nobody is
+   watching would otherwise wait at that prompt.
+4. In the new conversation, "list peers on agent-bridge" shows the agents. To undo:
+   `node install.mjs --antigravity --uninstall`.
 
 ## If something goes wrong
 

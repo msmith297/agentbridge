@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MCP = path.join(ROOT, 'plugin', 'client', 'mcp.mjs');
 const HOOK = path.join(ROOT, 'plugin', 'client', 'hook.mjs');
+const AGY_MCP = path.join(ROOT, 'plugin', 'client', 'antigravity-mcp.mjs');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-bridge-test-'));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 // Poll until fn() is truthy (network latency to a remote hub varies); returns the last value.
@@ -1051,6 +1052,85 @@ try {
   await admin('POST', '/peers/purge', { names: [`chat1-${RUN}`, `chat2-${RUN}`, `renamed-${RUN}`, `fresh3-${RUN}`] });
   await admin('POST', '/devices/revoke', { name: `codexapp-${RUN}` });
   await admin('POST', '/devices/delete', { name: `codexapp-${RUN}` });
+
+  // Google Antigravity: one MCP server for all conversations (antigravity-mcp.mjs gives each its own
+  // session, by the conversation id in each call) and hooks with Antigravity's payloads and output.
+  {
+    const agyHome = path.join(TMP, 'agy'); // stands in for ~/.gemini/antigravity (daemon file, agentapi)
+    fs.mkdirSync(path.join(agyHome, 'bin'), { recursive: true });
+    fs.mkdirSync(path.join(agyHome, 'daemon'), { recursive: true });
+    const sentFile = path.join(TMP, 'agentapi-sent.txt');
+    fs.writeFileSync(path.join(agyHome, 'bin', 'agentapi'), `#!/bin/sh\nprintf '%s\\n' "$ANTIGRAVITY_LS_ADDRESS" "$@" > "${sentFile}"\n`, { mode: 0o755 });
+    const agyEnv = { ...envA, AGENT_BRIDGE_ANTIGRAVITY_HOME: agyHome };
+    const dirs = ['one', 'two'].map(n => { const d = path.join(TMP, `agy-${n}-${RUN}`); fs.mkdirSync(d, { recursive: true }); return d; });
+    const convs = [`agyconv1-${RUN}`, `agyconv2-${RUN}`];
+    const G = spawn(process.execPath, [AGY_MCP], { cwd: TMP, env: agyEnv, stdio: ['pipe', 'pipe', 'ignore'] });
+    const gPending = new Map();
+    let gN = 0;
+    readline.createInterface({ input: G.stdout }).on('line', l => { const m = JSON.parse(l); gPending.get(m.id)?.(m); });
+    const grpc = (method, params) => new Promise(r => { const id = ++gN; gPending.set(id, r); G.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); });
+    await grpc('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'antigravity-client', version: 'v1.0.0' } });
+    const listed = (await grpc('tools/list')).result?.tools?.map(t => t.name) ?? [];
+    check('Antigravity: one MCP server lists the tools without joining the bridge itself',
+      listed.includes('send_message') && !listed.includes('session_event') && !(await admin('GET', '/state')).data.peers.some(p => p.kind === 'antigravity'), JSON.stringify(listed));
+    const base = i => ({ conversationId: convs[i], workspacePaths: [dirs[i]], cwd: dirs[i], modelName: 'test', lastUserInput: 'hi', transcriptPath: '', artifactDirectoryPath: '' });
+    const agyHook = async input => {
+      const t0 = Date.now();
+      const r = await hookProc(agyEnv, input, ['--antigravity']).done;
+      let json = null;
+      try { json = JSON.parse(r.out); } catch { /* checked by the caller */ }
+      return { ...r, json, ms: Date.now() - t0 };
+    };
+    const injected = r => r.json?.injectSteps?.map(s => s.systemMessage?.systemMessage).join('\n') ?? '';
+    const first = await agyHook({ ...base(0), hookEventName: 'PreInvocation', invocationNum: 0, initialNumSteps: 1 });
+    const agyPeers = (await admin('GET', '/state')).data.peers.filter(p => p.kind === 'antigravity');
+    const name1 = agyPeers.find(p => p.key === convs[0])?.name;
+    check('Antigravity: a conversation joins the bridge on its first prompt, always-listening, and is told so',
+      name1?.startsWith(`agy-one-${RUN}`) && injected(first).includes(`you are "${name1}", always-listening`), first.out + JSON.stringify(agyPeers.map(p => [p.name, p.key])));
+    const gcall = async (i, tool, args = {}) => (await grpc('tools/call', { name: tool, arguments: args, _meta: { 'antigravity.google/conversation_id': convs[i] } })).result?.content?.[0]?.text ?? '';
+    await agyHook({ ...base(1), hookEventName: 'PreInvocation', invocationNum: 0, initialNumSteps: 1 }); // the second conversation's first prompt
+    await gcall(0, 'send_message', { to: `bob-${RUN}`, message: `from antigravity one ${RUN}` });
+    await gcall(1, 'send_message', { to: `bob-${RUN}`, message: `from antigravity two ${RUN}` });
+    const agyState = (await admin('GET', '/state')).data;
+    const name2 = agyState.peers.find(p => p.key === convs[1])?.name;
+    const sender = body => agyState.messages.find(m => m.body === body)?.from;
+    check('Antigravity: each conversation is its own agent', name2?.startsWith(`agy-two-${RUN}`) &&
+      sender(`from antigravity one ${RUN}`) === name1 && sender(`from antigravity two ${RUN}`) === name2, JSON.stringify([name1, name2, sender(`from antigravity one ${RUN}`)]));
+    while (!(await B.call('check_inbox')).includes('No new messages')) { /* empty Bob's inbox */ }
+    await B.call('send_message', { to: name1, message: `mid-turn ${RUN}` });
+    const post = await agyHook({ ...base(0), hookEventName: 'PostToolUse', toolCall: { id: 't1', name: 'run_command', args: { CommandLine: 'ls' } }, stepIdx: 3 });
+    const mid = await agyHook({ ...base(0), hookEventName: 'PreInvocation', invocationNum: 2, initialNumSteps: 5 });
+    check('Antigravity: mail that arrives mid-turn goes in before the next model call (PostToolUse answers {})',
+      post.out === '{}' && injected(mid).includes(`mid-turn ${RUN}`), post.out + mid.out);
+    await B.call('send_message', { to: name1, message: `at stop ${RUN}` });
+    const stopEvt = i => ({ ...base(i), hookEventName: 'Stop', executionNum: 0, terminationReason: 'NO_TOOL_CALL', fullyIdle: true });
+    const stop1 = await agyHook(stopEvt(0));
+    check('Antigravity: Stop continues the conversation with mail that is waiting', stop1.json?.decision === 'continue' && stop1.json.reason.includes(`at stop ${RUN}`), stop1.out);
+    // The app: Stop ends the turn and a background listener wakes the conversation through agentapi.
+    fs.writeFileSync(path.join(agyHome, 'daemon', 'hub_1.json'), JSON.stringify({ pid: process.pid, httpPort: 4321, csrfToken: 'test-csrf' }));
+    const stop2 = await agyHook(stopEvt(0));
+    check('Antigravity app: with nothing waiting, Stop ends the turn and listens in the background', stop2.out === '{}' && stop2.ms < 8000, `${stop2.out} ${stop2.ms}ms`);
+    await sleep(1000);
+    await B.call('send_message', { to: name1, message: `wake up ${RUN}` });
+    const woke = await until(() => fs.existsSync(sentFile) && fs.readFileSync(sentFile, 'utf8'), 20_000);
+    check('Antigravity app: mail wakes the conversation through agentapi', woke && woke.startsWith('localhost:4321\nsend-message\n') &&
+      woke.includes(convs[0]) && woke.includes(`wake up ${RUN}`), woke);
+    const wokenTurn = await agyHook({ ...base(0), hookEventName: 'PreInvocation', invocationNum: 0, initialNumSteps: 1 });
+    check('Antigravity app: the woken turn confirms that mail instead of delivering it again', !wokenTurn.out.includes(`wake up ${RUN}`) &&
+      (await gcall(0, 'check_inbox')).includes('No new messages'), wokenTurn.out);
+    // The agy CLI (no app to wake it): Stop holds the turn while listening, like Codex.
+    fs.rmSync(path.join(agyHome, 'daemon', 'hub_1.json'));
+    const holding = agyHook(stopEvt(1));
+    await sleep(1500);
+    await B.call('send_message', { to: name2, message: `while holding ${RUN}` });
+    const held = await holding;
+    check('Antigravity CLI: Stop holds the turn while listening and continues with new mail', held.json?.decision === 'continue' && held.json.reason.includes(`while holding ${RUN}`), held.out);
+    await new Promise(r => { G.on('close', r); G.stdin.end(); });
+    await until(async () => !(await admin('GET', '/state')).data.peers.some(p => p.kind === 'antigravity' && p.online), 8000);
+    check('Antigravity: its conversations leave the bridge when the app closes the server',
+      !(await admin('GET', '/state')).data.peers.some(p => p.kind === 'antigravity' && p.online));
+    await admin('POST', '/peers/purge', { names: [name1, name2].filter(Boolean) });
+  }
 
   // Revocation.
   await admin('POST', '/devices/revoke', { name: `win-${RUN}` });

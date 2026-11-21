@@ -9,6 +9,10 @@
 //   SessionStart --listen  the same at startup/resume, so a session listens again after an app
 //                     restart without needing a prompt first.
 //   Codex has no background-rewake hooks, so its Stop hook holds the turn open while listening.
+//   --antigravity     Google Antigravity's hooks (camelCase payloads, their own events and output):
+//                     PreInvocation (before each model call) delivers mail and the status line,
+//                     PostToolUse reports activity, Stop works as in Codex; each hook also tells
+//                     antigravity-mcp.mjs which conversations exist (~/.agent-bridge/antigravity/).
 //   PermissionRequest (Claude Code) remote approvals: forward the permission prompt to the
 //                     operator's console and wait for Allow/Deny; with no answer in time, the
 //                     normal prompt shows. By default only in turns a bridge message started.
@@ -21,6 +25,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { HOME, loadConfig, localAdminToken, createApi, takeInbox, formatMessages, parentPid, findOwner, processAlive, processStarted, PEER_NOTE, LISTEN_ALWAYS, argsFingerprint, resumeNote, capMessage, crumb, awaitingNote } from './lib.mjs';
 
 
@@ -28,11 +34,16 @@ crumb(`start ${process.argv.slice(2).join(' ') || '-'} node ${process.version}`)
 
 const KEEPALIVE_MS = Number(process.env.AGENT_BRIDGE_KEEPALIVE_MINUTES || 30) * 60_000;
 const LISTENER = process.argv.includes('--listen');
+const AGY = process.argv.includes('--antigravity');
 const STARTUP_GRACE_MS = Number(process.env.AGENT_BRIDGE_STARTUP_GRACE_MS ?? 90_000); // see the 409 handling
 const QUIET_LIMIT_MS = 24 * 3_600_000; // a session silent this long (agent process still there) is given up
 const KEEP_AWAKE_MS = Number(process.env.AGENT_BRIDGE_KEEP_AWAKE_MS ?? 25 * 60_000); // under the app's 30-minute idle timeout
 const cfg = loadConfig();
-if (!cfg.paired) { crumb(`not connected (no device token readable in ${HOME})`); process.exit(0); } // this computer hasn't been connected yet
+if (!cfg.paired) { // this computer hasn't been connected yet
+  crumb(`not connected (no device token readable in ${HOME})`);
+  if (AGY) await new Promise(r => process.stdout.write('{}', r)); // Antigravity expects a JSON answer
+  process.exit(0);
+}
 if (!cfg.token && cfg.local) cfg.token = localAdminToken();
 const api = createApi(cfg);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -52,7 +63,94 @@ function finish(stream, text, code) {
 }
 
 function emit(obj) {
-  return finish(process.stdout, JSON.stringify(obj), 0);
+  return finish(process.stdout, JSON.stringify(AGY ? antigravityOutput(obj) : obj), 0);
+}
+
+// Antigravity: context goes in as a system message before the model call, and a Stop hook keeps the
+// agent going with decision "continue". Nothing else has an equivalent (user-facing notes are dropped).
+function antigravityOutput(obj) {
+  const context = obj.hookSpecificOutput?.additionalContext;
+  if (context) return { injectSteps: [{ systemMessage: { systemMessage: context } }] };
+  if (obj.decision === 'block') return { decision: 'continue', reason: obj.reason };
+  return {};
+}
+
+// Antigravity's payloads in the shapes the code below handles. PreInvocation runs before every model
+// call: the first of a turn is the user's prompt, later ones follow tool calls (the time to hand
+// over mail that arrived meanwhile, since PostToolUse can't add context there). MCP tools run
+// through call_mcp_tool; they're named server__tool, as in Claude Code, so bridge calls are recognised.
+const AGY_SESSIONS = path.join(HOME, 'antigravity');
+function antigravityInput(input) {
+  input.session_id = input.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID;
+  input.cwd ||= input.workspacePaths?.[0];
+  const call = input.toolCall;
+  if (call) {
+    const mcp = call.name === 'call_mcp_tool' && call.args;
+    input.tool_name = mcp ? `mcp__${mcp.ServerName}__${mcp.ToolName}` : call.name;
+    input.tool_input = mcp ? mcp.Arguments : call.args;
+  }
+  input.antigravity_event = input.hookEventName;
+  input.hook_event_name = input.hookEventName === 'PreInvocation' ? (input.invocationNum ? 'PostToolUse' : 'UserPromptSubmit') : input.hookEventName;
+  if (!input.session_id || LISTENER) return;
+  // Tell antigravity-mcp.mjs (the app's one MCP server) this conversation exists, where it works, and
+  // which app process runs it, so it puts the conversation on the bridge before its first tool call.
+  try {
+    fs.mkdirSync(AGY_SESSIONS, { recursive: true });
+    fs.writeFileSync(path.join(AGY_SESSIONS, `${String(input.session_id).replace(/[^\w-]/g, '')}.json`),
+      JSON.stringify({ cwd: input.cwd, host_pids: [process.ppid, parentPid(process.ppid)].filter(Boolean), at: Date.now() }));
+  } catch { /* the session still joins on its first bridge tool call */ }
+}
+
+// The Antigravity app's language server, whose local API can start a turn in a conversation (as
+// Claude Code's background wake does): ~/.gemini/antigravity/daemon/*.json names its port and token.
+// Only the app has one (not the agy CLI), and only the one running this conversation counts.
+const AGY_HOME = process.env.AGENT_BRIDGE_ANTIGRAVITY_HOME || path.join(os.homedir(), '.gemini', 'antigravity'); // tests point it elsewhere
+const AGY_DAEMONS = path.join(AGY_HOME, 'daemon');
+const AGENTAPI = path.join(AGY_HOME, 'bin', process.platform === 'win32' ? 'agentapi.exe' : 'agentapi');
+function antigravityDaemon(hostPids) {
+  if (!fs.existsSync(AGENTAPI)) return null;
+  let files = [];
+  try { files = fs.readdirSync(AGY_DAEMONS).filter(f => f.endsWith('.json')); } catch { return null; }
+  for (const f of files) {
+    try {
+      const d = JSON.parse(fs.readFileSync(path.join(AGY_DAEMONS, f), 'utf8'));
+      if (hostPids.includes(d.pid) && d.httpPort && processAlive(d.pid)) return d;
+    } catch { /* unreadable or stale: skip */ }
+  }
+  return null;
+}
+
+// Stop in the Antigravity app: end the turn and listen in the background (the user can type
+// meanwhile), as Claude Code does. False where that isn't possible: the Stop hook holds instead.
+function antigravityListen(input) {
+  const hostPids = [process.ppid, parentPid(process.ppid)].filter(Boolean);
+  const daemon = antigravityDaemon(hostPids);
+  if (!daemon) return false;
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--antigravity', '--listen'], {
+    detached: true, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true,
+    env: { ...process.env, AGENT_BRIDGE_OWNER_PID: String(daemon.pid) }, // the listener ends with the app
+  });
+  child.stdin.end(JSON.stringify({ ...input, hookEventName: 'Stop' }));
+  child.unref();
+  trace(input.session_id, `background listener ${child.pid} started (Antigravity app ${daemon.pid})`);
+  return true;
+}
+
+// The background listener's wake-up: the mail becomes the conversation's next message.
+function antigravityWake(input, text) {
+  const daemon = antigravityDaemon([Number(process.env.AGENT_BRIDGE_OWNER_PID)]);
+  if (!daemon) { trace(input.session_id, 'Antigravity app gone; mail stays for the next prompt'); process.exit(0); }
+  try {
+    execFileSync(AGENTAPI, ['send-message', String(input.session_id), text], {
+      env: { ...process.env, ANTIGRAVITY_LS_ADDRESS: `localhost:${daemon.httpPort}`, ANTIGRAVITY_CSRF_TOKEN: daemon.csrfToken },
+      stdio: 'ignore', timeout: 30_000, windowsHide: true,
+    });
+    trace(input.session_id, 'woke the Antigravity conversation');
+  } catch (err) {
+    // The lease runs out and the mail is delivered with the next prompt instead.
+    trace(input.session_id, `waking the Antigravity conversation failed (${String(err.message).slice(0, 120)})`);
+  }
+  process.exit(0);
 }
 
 // Find this session's peer. Claude Code peers register with their session id; Codex peers are
@@ -63,6 +161,15 @@ async function status(input, activity) {
     return await api('POST', '/heartbeat', activity ? { ...who, activity } : who);
   } catch (err) {
     if (err.status !== 404) throw err;
+  }
+  // Antigravity: antigravity-mcp.mjs puts the conversation on the bridge once this hook has told it
+  // about it; on a new conversation's first prompt, give it a few seconds to.
+  if (AGY) {
+    for (let i = 0; input.hook_event_name === 'UserPromptSubmit' && i < 16; i++) {
+      await sleep(500);
+      try { return await api('POST', '/heartbeat', activity ? { ...who, activity } : who); } catch (err) { if (err.status !== 404) throw err; }
+    }
+    throw Object.assign(new Error('session not on the bridge'), { status: 404 });
   }
   const call = input.hook_event_name === 'PostToolUse' ? bridgeCall(input) : null;
   const bridgeTool = Boolean(call);
@@ -310,7 +417,7 @@ async function listen(input, who) {
   let pollFailures = 0;
   let missingSince = 0;
   let quietSince = 0;
-  let stayAwake = Boolean(st.keep_awake);
+  let stayAwake = !AGY && Boolean(st.keep_awake); // keeping a hidden session awake is a Claude app matter
   const listenerStarted = Date.now();
   for (;;) {
     if (!ownsLock(sid)) return trace(sid, 'replaced or retired; exit'); // a newer listener or a user prompt
@@ -350,7 +457,7 @@ async function listen(input, who) {
     if (!ownsLock(sid)) return trace(sid, `replaced or retired after poll (pending ${pending}); exit`);
     const now = await api('POST', '/heartbeat', who).catch(() => null);
     if (now && !(now.listen_until > Date.now())) return trace(sid, 'listening switched off; exit');
-    if (now) stayAwake = Boolean(now.keep_awake);
+    if (now) stayAwake = !AGY && Boolean(now.keep_awake);
     if (!pending) {
       // Stay awake: the Claude app stops a hidden session after 30 idle minutes (its agent-bridge
       // server and this listener with it). A tiny turn before that keeps it running.
@@ -376,18 +483,22 @@ async function listen(input, who) {
     fs.writeFileSync(handedFile(sid), JSON.stringify(msgs.map(m => m.id)));
     markWoken(sid);
     const after = await api('POST', '/rounds', who);
+    const text = `New agent-bridge messages (${PEER_NOTE}):\n\n${formatMessages(msgs)}\n\n${resumeNote(st, after, msgs)}`;
+    if (AGY) return antigravityWake(input, text);
     // Exit code 2: Claude Code wakes the agent with this text.
-    return finish(process.stderr, `New agent-bridge messages (${PEER_NOTE}):\n\n${formatMessages(msgs)}\n\n${resumeNote(st, after, msgs)}`, 2);
+    return finish(process.stderr, text, 2);
   }
 }
 
 try {
   const input = await readStdin();
+  if (AGY) antigravityInput(input);
   crumb(`${input.hook_event_name || '?'} fields: ${Object.keys(input).join(',')}${input.turn_id ? ' (codex)' : ''}`);
   // Codex builds name the conversation differently; take whichever id they send.
   input.session_id ||= input.thread_id || input.conversation_id || input.sessionId || input.threadId || input.conversationId;
   if (!input.session_id) {
     trace('-', `${input.hook_event_name || 'hook'} without a session id; fields: ${Object.keys(input).join(', ') || '(none)'}`);
+    if (AGY) await emit({});
     process.exit(0);
   }
   const who = { session_id: input.session_id };
@@ -432,8 +543,9 @@ try {
     case 'PostToolUse': {
       const bridgeTool = Boolean(bridgeCall(input));
       if (bridgeTool && !input.turn_id) break; // bridge tools report mail themselves
-      const st = await status(input, bridgeTool ? undefined : activityOf(input.tool_name, input.tool_input));
+      const st = await status(input, bridgeTool || !input.tool_name ? undefined : activityOf(input.tool_name, input.tool_input));
       if (bridgeTool) break; // Codex: the call above may have linked this chat to its agent-bridge server
+      if (input.antigravity_event === 'PostToolUse') break; // Antigravity: mail goes in before the next model call
       const parts = [];
       const msgs = st.unread ? await takeInbox(api, who) : [];
       if (msgs.length) {
@@ -462,8 +574,10 @@ try {
       }
       // Only mail addressed to the agent resumes it; FYI group mail waits for its next active moment.
       let msgs = (st.urgent ?? st.unread) ? await takeInbox(api, who) : [];
-      const codex = Boolean(input.turn_id); // Claude Code listens in the background instead (--listen)
-      if (!codex) {
+      // Codex (and the agy CLI) hold the turn open while listening. Claude Code listens in the background
+      // (--listen), and so does the Antigravity app.
+      const holds = Boolean(input.turn_id) || (AGY && !msgs.length && listening() && !antigravityListen(input));
+      if (!holds) {
         if (!msgs.length) break;
         markWoken(input.session_id);
         const after = await api('POST', '/rounds', who);
@@ -497,4 +611,5 @@ try {
   // Bridge unavailable or session not on the bridge: never block the agent.
   crumb(`ended: ${err?.status ? `HTTP ${err.status} ` : ''}${String(err?.message || err).slice(0, 160)}`);
 }
+if (AGY) await emit({}); // Antigravity expects a JSON answer from every hook
 process.exit(0);

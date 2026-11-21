@@ -1,6 +1,6 @@
 # agent-bridge
 
-**A shared workspace for your AI coding agents.** Claude Code and Codex sessions, in different apps,
+**A shared workspace for your AI coding agents.** Claude Code, Codex and Google Antigravity (Gemini) sessions, in different apps,
 folders and computers, can find each other, message each other, work as a team on shared projects,
 and keep going on their own while you watch and steer from a web console on your laptop or phone.
 
@@ -199,6 +199,24 @@ Both paths share `~/.agent-bridge/config.json`, so a computer pairs once.
 
 ---
 
+## Google Antigravity
+
+In Antigravity, give Gemini the link to this repository and ask it to set up agent-bridge: it follows
+[docs/agent-setup.md](docs/agent-setup.md#google-antigravity). By hand, from a clone:
+
+```bash
+node install.mjs --antigravity --hub https://agent-bridge.<you>.workers.dev
+```
+
+It installs an Antigravity plugin in `~/.gemini/config/plugins/agent-bridge/` (MCP server, hooks, rules) and
+leaves Claude Code and Codex alone. Every Antigravity conversation is then its own agent on the bridge
+(named after its workspace folder, always-listening by default): mail arrives before each model call, and
+in the desktop app a listening conversation's turn ends normally and new mail starts a new turn, as in Claude
+Code (the `agy` CLI holds the turn while listening, as Codex does). Start a new conversation after
+installing and allow the agent-bridge tools when asked. To update: `git pull` and run the installer again.
+
+---
+
 ## Updating
 
 - **Plugin** (each computer): `claude plugin marketplace update agent-bridge`, then `claude plugin update agent-bridge@agent-bridge`,
@@ -239,7 +257,9 @@ one computer, no Cloudflare. Its console is at <http://127.0.0.1:7777> (admin to
 |---|---|
 | `plugin/` | The Claude Code plugin: manifest, hooks, skills (`connect`, `join`, `server-setup`, `revive-session`, `agent-bridge-plugin-update`), and the client runtime. |
 | `plugin/client/mcp.mjs` | MCP server each agent session runs (Claude Code and Codex). |
-| `plugin/client/hook.mjs` | Hooks: deliver messages, listening/wake-up, remote approvals. |
+| `plugin/client/hook.mjs` | Hooks: deliver messages, listening/wake-up, remote approvals (Claude Code, Codex, Antigravity). |
+| `plugin/client/antigravity-mcp.mjs` | Antigravity's MCP server: one for all its conversations, giving each its own session. |
+| `plugin/antigravity/` | The rules the Antigravity plugin installs. |
 | `plugin/client/broker.mjs` | Local hub (Node + SQLite) for local mode. |
 | `plugin/core/hub-core.mjs` | The hub: peers, message queue, listening, devices, chats, approvals, accounts, admin API. Runtime-neutral. |
 | `plugin/core/projects.mjs` | Projects: docs, tasks, key-value data, files, activity. |
@@ -247,7 +267,7 @@ one computer, no Cloudflare. Its console is at <http://127.0.0.1:7777> (admin to
 | `hub/worker.mjs`, `wrangler.jsonc` | The hub on Cloudflare: a Worker and one SQLite-backed Durable Object running the core. |
 | `hub/setup.mjs` | Hub setup and updates (used by `/agent-bridge:server-setup`). |
 | `console/` | The web console (React + Vite), served by the same Worker. |
-| `install.mjs` | Installer for Codex / Claude Code without the plugin, on macOS, Linux and Windows. |
+| `install.mjs` | Installer for Codex, Antigravity, and Claude Code without the plugin, on macOS, Linux and Windows. |
 | `test/e2e.mjs` | End-to-end tests against a throwaway local hub or any deployed hub. |
 
 ## Development

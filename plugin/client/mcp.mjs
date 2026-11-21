@@ -5,6 +5,8 @@
 // Per-folder defaults, for every session opened in a folder: .agent-bridge.json
 //   { "name": "planner", "listen": "always", "project": "unify3d" }   ("listen": "always" | minutes)
 // Env: AGENT_BRIDGE_NAME, AGENT_BRIDGE_LISTEN, AGENT_BRIDGE_PROJECT, plus the config vars in lib.mjs.
+//      AGENT_BRIDGE_TEMPLATE=1  answer initialize and tools/list only, never join the hub (the
+//      Antigravity server, antigravity-mcp.mjs, lists the tools this way before any conversation).
 // Names/listening/project set with tools are remembered per session and win.
 
 import fs from 'node:fs';
@@ -32,6 +34,7 @@ const PEER_ID = crypto.randomUUID();
 const CLAUDE_SESSION_ID = process.env.CLAUDE_CODE_SESSION_ID || null;
 let SESSION_ID = null;
 const PROJECT = readProjectConfig();
+const TEMPLATE = process.env.AGENT_BRIDGE_TEMPLATE === '1';
 
 let kind = 'agent';    // from the MCP client's name at initialize: claude | codex | ...
 let app = 'agent';
@@ -161,7 +164,7 @@ function connect() {
 }
 
 async function heartbeat() {
-  if (removed) return;
+  if (removed || TEMPLATE) return;
   try {
     if (!connected) {
       if (!cfg.paired) Object.assign(cfg, loadConfig());
@@ -693,8 +696,10 @@ function instructions() {
       'When your user wants to use agent-bridge, call the connect tool and relay the approval code it returns; the user approves it once in the web console.';
   }
   return [
-    `You are connected to agent-bridge as "${myName || '(connecting)'}" on device "${cfg.device}". Other AI agents — other sessions, other apps (Claude Code, Codex), other computers — and the human operator's web console can exchange messages with you.`,
-    `Listening mode (at session start: ${listenDescription().replace(/^You are /, '').replace(/:.*$/, '')}) can be changed at any time by you, your user, or the operator's console, so this note may be out of date: before answering questions about it, call listen with no arguments to check. While you are listening, each user prompt carries a short agent-bridge status line saying so.`,
+    TEMPLATE
+      ? `This conversation is on agent-bridge (device "${cfg.device}"): each conversation is its own agent there, with its own name. Other AI agents`
+      : `You are connected to agent-bridge as "${myName || '(connecting)'}" on device "${cfg.device}". Other AI agents — other sessions, other apps (Claude Code, Codex), other computers — and the human operator's web console can exchange messages with you.`,
+    `Listening mode (at session start: ${TEMPLATE ? 'always-listening' : listenDescription().replace(/^You are /, '').replace(/:.*$/, '')}) can be changed at any time by you, your user, or the operator's console, so this note may be out of date: before answering questions about it, call listen with no arguments to check. While you are listening, each user prompt carries a short agent-bridge status line saying so.`,
     myProject
       ? `You are in project "${myProject}". Its docs, tasks, data (kv) and files are your team's shared context: check the project overview when you start, claim tasks before working on them, keep task status and notes current, and record decisions in docs.`
       : 'Projects: when your user asks you to connect to a project, use the project tool (action "join"); it gives you shared docs, a task board, key-value data and files with the other agents in it.',
@@ -716,9 +721,9 @@ async function handle({ id, method, params }) {
   switch (method) {
     case 'initialize': {
       const client = String(params?.clientInfo?.name || '').toLowerCase();
-      kind = client.includes('codex') ? 'codex' : client.includes('claude') ? 'claude' : slug(client || 'agent');
+      kind = client.includes('codex') ? 'codex' : client.includes('claude') ? 'claude' : client.includes('antigravity') ? 'antigravity' : slug(client || 'agent');
       app = detectApp();
-      await connect().catch(err => log('hub connection failed:', err.message));
+      if (!TEMPLATE) await connect().catch(err => log('hub connection failed:', err.message));
       return write({ id, result: {
         protocolVersion: params?.protocolVersion || '2025-06-18',
         capabilities: { tools: {} },

@@ -31,6 +31,7 @@ export function appMark(peer?: Peer | null): { text: string; color: string; labe
   if (!peer || peer.kind === 'human' || peer.kind === 'claude' || peer.kind === 'codex') return null;
   const hay = `${peer.kind ?? ''} ${peer.app ?? ''} ${peer.display_name ?? ''} ${peer.name}`;
   if (/solid\s*works/i.test(hay)) return { text: 'SW', color: '#da291c', label: 'SolidWorks' };
+  if (peer.kind === 'antigravity') return { text: 'AG', color: '#4285f4', label: 'Google Antigravity' };
   return null;
 }
 
