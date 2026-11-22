@@ -3,12 +3,27 @@ import type { HubState, Peer } from '../api';
 import { Avatar, isBusy, statusText } from './Identity';
 
 // Top-bar status: the agents working right now pop in (and out when they stop), next to simple
-// counts: busy · online · total. Clicking an avatar opens a DM with that agent.
+// counts: busy · online · total. Clicking an avatar opens the conversation that agent is working in.
 
 const MAX_SHOWN = 3; // the rest show as "+N" (keeps the bar compact at every width)
 const OUT_MS = 260; // matches the pop-out animation in styles.css
 
 type Slot = { peer: Peer; phase: 'in' | 'out' };
+
+// Where an agent is working: the conversation it last sent to (a group chat, a project chat, or its
+// DM with the operator; "All messages" for a message to another agent, which has no thread of its
+// own here). Its DM when it hasn't sent anything the console has loaded.
+function workingIn(state: HubState, peer: Peer): { href: string; label: string } {
+  const dm = { href: `#/messages/dm/${encodeURIComponent(peer.key)}`, label: 'your chat with it' };
+  const sent = state.messages.find(m => (m.from_key ? m.from_key === peer.key : m.from === peer.name)); // newest first
+  if (!sent) return dm;
+  if (sent.chat_id) {
+    return { href: `#/messages/chat/${sent.chat_id}`, label: `# ${(state.chats ?? []).find(c => c.id === sent.chat_id)?.title ?? sent.chat_id}` };
+  }
+  if (sent.project) return { href: `#/projects/${encodeURIComponent(sent.project)}/chat`, label: `project ${sent.project}` };
+  const toHuman = sent.to_key?.startsWith('human:') || state.peers.some(p => p.kind === 'human' && p.name === sent.to);
+  return toHuman ? dm : { href: '#/messages', label: `All messages (its message to ${sent.to})` };
+}
 
 export function StatusBar({ state }: { state: HubState }) {
   const agents = state.peers.filter(p => p.kind !== 'human');
@@ -22,12 +37,15 @@ export function StatusBar({ state }: { state: HubState }) {
     <div className="status-bar" aria-label={`${busy.length} busy, ${online} online, ${agents.length} agents in total`}>
       {slots.length ? (
         <div className="busy-stack">
-          {shown.map(({ peer, phase }) => (
-            <a key={peer.id} className={`busy-slot ${phase}`} href={`#/messages/dm/${encodeURIComponent(peer.key)}`}
-              title={`${peer.display_name || peer.name}: ${statusText(peer) || 'busy'}`}>
-              <Avatar name={peer.name} peer={peer} size={24} />
-            </a>
-          ))}
+          {shown.map(({ peer, phase }) => {
+            const where = workingIn(state, peer);
+            return (
+              <a key={peer.id} className={`busy-slot ${phase}`} href={where.href}
+                title={`${peer.display_name || peer.name}: ${statusText(peer) || 'busy'} · opens ${where.label}`}>
+                <Avatar name={peer.name} peer={peer} size={24} />
+              </a>
+            );
+          })}
           {extra > 0 ? <span className="busy-more" title={`${extra} more busy`}>+{extra}</span> : null}
         </div>
       ) : null}

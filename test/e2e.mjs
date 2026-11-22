@@ -1072,7 +1072,7 @@ try {
     await grpc('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'antigravity-client', version: 'v1.0.0' } });
     const listed = (await grpc('tools/list')).result?.tools?.map(t => t.name) ?? [];
     check('Antigravity: one MCP server lists the tools without joining the bridge itself',
-      listed.includes('send_message') && !listed.includes('session_event') && !(await admin('GET', '/state')).data.peers.some(p => p.kind === 'antigravity'), JSON.stringify(listed));
+      listed.includes('send_message') && !listed.includes('session_event') && !(await admin('GET', '/state')).data.peers.some(p => p.kind === 'antigravity' && p.device === `mac-${RUN}`), JSON.stringify(listed));
     const base = i => ({ conversationId: convs[i], workspacePaths: [dirs[i]], cwd: dirs[i], modelName: 'test', lastUserInput: 'hi', transcriptPath: '', artifactDirectoryPath: '' });
     const agyHook = async input => {
       const t0 = Date.now();
@@ -1126,9 +1126,9 @@ try {
     const held = await holding;
     check('Antigravity CLI: Stop holds the turn while listening and continues with new mail', held.json?.decision === 'continue' && held.json.reason.includes(`while holding ${RUN}`), held.out);
     await new Promise(r => { G.on('close', r); G.stdin.end(); });
-    await until(async () => !(await admin('GET', '/state')).data.peers.some(p => p.kind === 'antigravity' && p.online), 8000);
-    check('Antigravity: its conversations leave the bridge when the app closes the server',
-      !(await admin('GET', '/state')).data.peers.some(p => p.kind === 'antigravity' && p.online));
+    const ours = async () => (await admin('GET', '/state')).data.peers.filter(p => convs.includes(p.key) && p.online);
+    await until(async () => !(await ours()).length, 8000);
+    check('Antigravity: its conversations leave the bridge when the app closes the server', !(await ours()).length);
     await admin('POST', '/peers/purge', { names: [name1, name2].filter(Boolean) });
   }
 
