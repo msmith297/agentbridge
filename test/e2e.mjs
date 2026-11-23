@@ -348,6 +348,18 @@ try {
   await hook(envA, { ...claudeEvt, hook_event_name: 'UserPromptSubmit' }); // user prompt retires the listener
   check('woken turn confirms the handed-over mail', Boolean((await handedMsg())?.delivered_at));
 
+  // A subagent's tool call (Claude Code's hooks carry agent_id) never takes the agent's mail: it would
+  // land in the subagent's context and count as read.
+  const agentName = (await admin('GET', '/state')).data.peers.find(p => p.key === claudeSession)?.name;
+  await B.call('send_message', { to: agentName, message: `for the agent ${RUN}` });
+  const toolEvt = { ...claudeEvt, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } };
+  const subPost = await hook(envA, { ...toolEvt, agent_id: 'a1b2c3', agent_type: 'general-purpose' });
+  const stillUnread = (await admin('GET', '/state')).data.messages.find(m => m.body === `for the agent ${RUN}`);
+  check('a subagent\'s tool call leaves the agent\'s mail alone (not shown to it, still unread)',
+    !JSON.stringify(subPost.out ?? '').includes(`for the agent ${RUN}`) && stillUnread && !stillUnread.delivered_at, JSON.stringify(subPost.out));
+  const mainPost = await hook(envA, toolEvt);
+  check('the agent\'s own next tool call gets that mail', mainPost.out?.hookSpecificOutput?.additionalContext?.includes(`for the agent ${RUN}`), JSON.stringify(mainPost.out).slice(0, 300));
+
   // A session listens from startup/resume (after an app restart) without needing a prompt first.
   const SL = hookProc(envA, { ...claudeEvt, hook_event_name: 'SessionStart', source: 'resume' }, ['--listen']);
   const lockBefore = readLock();

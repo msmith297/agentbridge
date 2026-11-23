@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // agent-bridge hook for Claude Code and Codex (same hook JSON protocol):
 //   UserPromptSubmit  inject unread messages as context; reset the auto-resume counter
-//   PostToolUse       inject messages that arrived while the agent was working
+//   PostToolUse       inject messages that arrived while the agent was working (never in a subagent:
+//                     Claude Code runs hooks for subagents' tool calls too, under the same session)
 //   Stop              if mail is already waiting, resume the agent with it
 //   Stop --listen     (Claude Code, registered with asyncRewake) background listener: the turn
 //                     ends normally and the session is idle (the user can type), while this
@@ -545,6 +546,9 @@ try {
       if (bridgeTool && !input.turn_id) break; // bridge tools report mail themselves
       const st = await status(input, bridgeTool || !input.tool_name ? undefined : activityOf(input.tool_name, input.tool_input));
       if (bridgeTool) break; // Codex: the call above may have linked this chat to its agent-bridge server
+      // A subagent's tool call (Claude Code says so with agent_id): mail handed over here would land in
+      // the subagent's context, not the agent's, and count as read. It waits for the agent's own hooks.
+      if (input.agent_id) break;
       if (input.antigravity_event === 'PostToolUse') break; // Antigravity: mail goes in before the next model call
       const parts = [];
       const msgs = st.unread ? await takeInbox(api, who) : [];
